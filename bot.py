@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import sys
+from datetime import datetime
 from aiohttp import web
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import Command, CommandStart, CommandObject
@@ -14,7 +15,7 @@ from supabase import create_client, Client
 # ==========================================
 # 🤖 TELEGRAM BOT
 BOT_TOKEN = "7769124785:AAE46Zt6jh9IPVt4IB4u0j8kgEVg2NpSYa0"
-ADMIN_ID = 844012884
+ADMIN_IDS = [844012884, 8162019020]  # Список администраторов
 
 # 🔐 SUPABASE (ТЕ ЖЕ ДАННЫЕ, ЧТО И ДЛЯ REACT!)
 # URL проекта (одинаковый для бота и сайта)
@@ -22,7 +23,7 @@ SUPABASE_URL = "https://wzpywfedbowlosmvecos.supabase.co"
 SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Ind6cHl3ZmVkYm93bG9zbXZlY29zIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjYzNTAyMzksImV4cCI6MjA4MTkyNjIzOX0.TmAYsmA8iwSpLPKOHIZM7jf3GLE3oeT7wD-l0ALwBPw"
 
 # 🌐 WEBAPP
-WEBAPP_URL = "https://tontrade-web.vercel.app/"
+WEBAPP_URL = "https://017c60b5d4b0.ngrok-free.app"
 API_PORT = 8080
 
 # Инициализация
@@ -38,10 +39,14 @@ logging.basicConfig(level=logging.INFO, stream=sys.stdout)
 class WorkerStates(StatesGroup):
     changing_balance = State()
     sending_message = State()
+    creating_promo_code = State()
+    creating_promo_amount = State()
+    creating_promo_activations = State()
 
 class AdminStates(StatesGroup):
     changing_support = State()
-    changing_bank = State()
+    selecting_country = State()
+    changing_country_bank = State()
 
 # ==========================================
 # 🗄 DATABASE FUNCTIONS
@@ -86,7 +91,13 @@ def db_upsert_user(user_id, username, full_name, referrer_id=None, photo_url=Non
         return True
 
 def db_update_field(user_id, field, value):
-    supabase.table("users").update({field: value}).eq("user_id", user_id).execute()
+    try:
+        result = supabase.table("users").update({field: value}).eq("user_id", user_id).execute()
+        logging.info(f"Updated user {user_id}: {field} = {value}")
+        return result
+    except Exception as e:
+        logging.error(f"Error updating user {user_id} field {field}: {e}")
+        return None
 
 def db_get_mammoths(worker_id):
     res = supabase.table("users").select("*").eq("referrer_id", worker_id).execute()
@@ -100,25 +111,74 @@ def db_get_settings():
             return res.data[0]
         else:
             logging.warning("No settings found in database")
-            return {"support_username": "support", "bank_details": "Не указано"}
+            return {"support_username": "support", "min_deposit": 10.0}
     except Exception as e:
         logging.error(f"Error getting settings: {e}")
-        return {"support_username": "support", "bank_details": "Не указано"}
+        return {"support_username": "support", "min_deposit": 10.0}
 
-def db_update_settings(field, value):
+def db_get_country_bank_details():
+    """Получает все реквизиты по странам"""
     try:
-        current = db_get_settings()
-        if current.get('id'):
-            logging.info(f"Updating settings: {field} = {value}")
-            result = supabase.table("settings").update({field: value}).eq("id", current['id']).execute()
-            logging.info(f"Settings update result: {result}")
-            return True
-        else:
-            logging.error("No settings ID found, cannot update")
-            return False
+        res = supabase.table("country_bank_details").select("*").eq("is_active", True).order("country_name").execute()
+        return res.data if res.data else []
     except Exception as e:
-        logging.error(f"Error updating settings: {e}")
+        logging.error(f"Error getting country bank details: {e}")
+        return []
+
+def db_get_country_by_name(country_name):
+    """Получает реквизиты конкретной страны"""
+    try:
+        res = supabase.table("country_bank_details").select("*").eq("country_name", country_name).single().execute()
+        return res.data if res.data else None
+    except Exception as e:
+        logging.error(f"Error getting country {country_name}: {e}")
+        return None
+
+def db_update_country_bank_details(country_name, bank_details):
+    """Обновляет реквизиты для страны"""
+    try:
+        result = supabase.table("country_bank_details").update({
+            "bank_details": bank_details
+        }).eq("country_name", country_name).execute()
+        logging.info(f"Updated bank details for {country_name}: {result}")
+        return True
+    except Exception as e:
+        logging.error(f"Error updating bank details for {country_name}: {e}")
         return False
+
+def db_create_promo_code(creator_id, code, reward_amount, max_activations, description=None):
+    """Создает новый промокод"""
+    try:
+        promo_data = {
+            "code": code.upper(),
+            "creator_id": creator_id,
+            "reward_amount": reward_amount,
+            "max_activations": max_activations,
+            "description": description or f"Промокод от воркера {creator_id}"
+        }
+        result = supabase.table("promo_codes").insert(promo_data).execute()
+        return result.data[0] if result.data else None
+    except Exception as e:
+        logging.error(f"Error creating promo code: {e}")
+        return None
+
+def db_get_worker_promos(creator_id):
+    """Получает все промокоды воркера"""
+    try:
+        res = supabase.table("promo_codes").select("*").eq("creator_id", creator_id).order("created_at", desc=True).execute()
+        return res.data if res.data else []
+    except Exception as e:
+        logging.error(f"Error getting worker promos: {e}")
+        return []
+
+def db_check_promo_exists(code):
+    """Проверяет, существует ли промокод"""
+    try:
+        res = supabase.table("promo_codes").select("id").eq("code", code.upper()).execute()
+        return len(res.data) > 0
+    except Exception as e:
+        logging.error(f"Error checking promo exists: {e}")
+        return True  # В случае ошибки считаем, что существует
 
 # ==========================================
 # 🎹 KEYBOARDS
@@ -136,6 +196,8 @@ def kb_start(support_username, user_id):
 def kb_worker():
     builder = InlineKeyboardBuilder()
     builder.button(text="🦣 Мои мамонты", callback_data="my_mammoths")
+    builder.button(text="🎁 Создать промокод", callback_data="create_promo")
+    builder.button(text="📋 Мои промокоды", callback_data="my_promos")
     builder.adjust(1)
     return builder.as_markup()
 
@@ -163,7 +225,22 @@ def kb_luck_select(user_id):
 def kb_admin():
     builder = InlineKeyboardBuilder()
     builder.button(text="✏️ Изменить Support", callback_data="adm_sup")
-    builder.button(text="💳 Изменить Реквизиты", callback_data="adm_bank")
+    builder.button(text="🏦 Реквизиты по странам", callback_data="adm_countries")
+    builder.adjust(1)
+    return builder.as_markup()
+
+def kb_countries():
+    """Клавиатура со списком стран"""
+    builder = InlineKeyboardBuilder()
+    countries = db_get_country_bank_details()
+    
+    for country in countries:
+        builder.button(
+            text=f"🏦 {country['country_name']} ({country['currency']})", 
+            callback_data=f"country_{country['id']}"
+        )
+    
+    builder.button(text="🔙 Назад", callback_data="back_admin")
     builder.adjust(1)
     return builder.as_markup()
 
@@ -244,13 +321,18 @@ async def cmd_worker(message: types.Message):
     mammoths = db_get_mammoths(user_id)
     count = len(mammoths) if mammoths else 0
     
+    # Получаем количество промокодов
+    promos = db_get_worker_promos(user_id)
+    promo_count = len(promos) if promos else 0
+    
     bot_info = await bot.get_me()
     ref_link = f"https://t.me/{bot_info.username}?start={user_id}"
     
     text = (
         "⚡️ <b>WORKER PANEL</b>\n\n"
         f"👤 ID: <code>{user_id}</code>\n"
-        f"🦣 Мамонтов: {count}\n\n"
+        f"🦣 Мамонтов: {count}\n"
+        f"🎁 Промокодов: {promo_count}\n\n"
         f"🔗 Реф-ссылка:\n<code>{ref_link}</code>"
     )
     await message.answer(text, parse_mode="HTML", reply_markup=kb_worker())
@@ -277,13 +359,18 @@ async def back_worker(call: types.CallbackQuery):
     mammoths = db_get_mammoths(user_id)
     count = len(mammoths) if mammoths else 0
     
+    # Получаем количество промокодов
+    promos = db_get_worker_promos(user_id)
+    promo_count = len(promos) if promos else 0
+    
     bot_info = await bot.get_me()
     ref_link = f"https://t.me/{bot_info.username}?start={user_id}"
     
     text = (
         "⚡️ <b>WORKER PANEL</b>\n\n"
         f"👤 ID: <code>{user_id}</code>\n"
-        f"🦣 Мамонтов: {count}\n\n"
+        f"🦣 Мамонтов: {count}\n"
+        f"🎁 Промокодов: {promo_count}\n\n"
         f"🔗 Реф-ссылка:\n<code>{ref_link}</code>"
     )
     await call.message.edit_text(text, parse_mode="HTML", reply_markup=kb_worker())
@@ -396,20 +483,155 @@ async def send_msg(message: types.Message, state: FSMContext):
     await state.clear()
 
 # ==========================================
+# 🎁 ПРОМОКОДЫ
+# ==========================================
+@dp.callback_query(F.data == "create_promo")
+async def create_promo_start(call: types.CallbackQuery, state: FSMContext):
+    await state.set_state(WorkerStates.creating_promo_code)
+    await call.message.edit_text(
+        "🎁 <b>СОЗДАНИЕ ПРОМОКОДА</b>\n\n"
+        "Введите текст промокода (только английские буквы и цифры):",
+        parse_mode="HTML"
+    )
+
+@dp.message(WorkerStates.creating_promo_code)
+async def create_promo_code(message: types.Message, state: FSMContext):
+    code = message.text.strip().upper()
+    
+    # Проверяем формат кода
+    if not code.replace('_', '').replace('-', '').isalnum():
+        await message.answer("❌ Промокод может содержать только буквы, цифры, дефисы и подчеркивания!")
+        return
+    
+    if len(code) < 3 or len(code) > 20:
+        await message.answer("❌ Длина промокода должна быть от 3 до 20 символов!")
+        return
+    
+    # Проверяем, не существует ли уже такой промокод
+    if db_check_promo_exists(code):
+        await message.answer("❌ Промокод с таким названием уже существует! Попробуйте другой.")
+        return
+    
+    await state.update_data(promo_code=code)
+    await state.set_state(WorkerStates.creating_promo_amount)
+    await message.answer(
+        f"✅ Промокод: <b>{code}</b>\n\n"
+        f"💰 Теперь введите сумму бонуса в USD (например: 50):",
+        parse_mode="HTML"
+    )
+
+@dp.message(WorkerStates.creating_promo_amount)
+async def create_promo_amount(message: types.Message, state: FSMContext):
+    try:
+        amount = float(message.text)
+        if amount <= 0 or amount > 1000:
+            await message.answer("❌ Сумма должна быть от 0.01 до 1000 USD!")
+            return
+        
+        await state.update_data(promo_amount=amount)
+        await state.set_state(WorkerStates.creating_promo_activations)
+        await message.answer(
+            f"💰 Сумма бонуса: <b>${amount:.2f}</b>\n\n"
+            f"🔢 Введите максимальное количество активаций (1-10000):",
+            parse_mode="HTML"
+        )
+    except ValueError:
+        await message.answer("❌ Введите корректную сумму (например: 50 или 25.5)!")
+
+@dp.message(WorkerStates.creating_promo_activations)
+async def create_promo_activations(message: types.Message, state: FSMContext):
+    try:
+        activations = int(message.text)
+        if activations <= 0 or activations > 10000:
+            await message.answer("❌ Количество активаций должно быть от 1 до 10000!")
+            return
+        
+        data = await state.get_data()
+        code = data['promo_code']
+        amount = data['promo_amount']
+        creator_id = message.from_user.id
+        
+        # Создаем промокод в базе
+        promo = db_create_promo_code(creator_id, code, amount, activations)
+        
+        if promo:
+            await message.answer(
+                f"🎉 <b>ПРОМОКОД СОЗДАН!</b>\n\n"
+                f"🎁 Код: <code>{code}</code>\n"
+                f"💰 Бонус: <b>${amount:.2f}</b>\n"
+                f"🔢 Макс. активаций: <b>{activations}</b>\n"
+                f"📅 Создан: {promo.get('created_at', 'сейчас')}\n\n"
+                f"Промокод готов к использованию на сайте!",
+                parse_mode="HTML"
+            )
+        else:
+            await message.answer("❌ Ошибка создания промокода. Попробуйте еще раз.")
+        
+        await state.clear()
+    except ValueError:
+        await message.answer("❌ Введите корректное число!")
+
+@dp.callback_query(F.data == "my_promos")
+async def show_my_promos(call: types.CallbackQuery):
+    creator_id = call.from_user.id
+    promos = db_get_worker_promos(creator_id)
+    
+    if not promos:
+        builder = InlineKeyboardBuilder()
+        builder.button(text="🎁 Создать первый промокод", callback_data="create_promo")
+        builder.button(text="🔙 Назад", callback_data="back_worker")
+        builder.adjust(1)
+        
+        await call.message.edit_text(
+            "📋 <b>МОИ ПРОМОКОДЫ</b>\n\n"
+            "У вас пока нет созданных промокодов.",
+            parse_mode="HTML",
+            reply_markup=builder.as_markup()
+        )
+        return
+    
+    # Формируем список промокодов
+    text = "📋 <b>МОИ ПРОМОКОДЫ</b>\n\n"
+    
+    for promo in promos[:10]:  # Показываем только первые 10
+        status = "🟢" if promo.get('is_active') else "🔴"
+        activations = promo.get('current_activations', 0)
+        max_activations = promo.get('max_activations', 0)
+        
+        text += (
+            f"{status} <code>{promo['code']}</code>\n"
+            f"💰 ${promo['reward_amount']:.2f} | "
+            f"📊 {activations}/{max_activations}\n\n"
+        )
+    
+    if len(promos) > 10:
+        text += f"... и еще {len(promos) - 10} промокодов\n\n"
+    
+    builder = InlineKeyboardBuilder()
+    builder.button(text="🎁 Создать новый", callback_data="create_promo")
+    builder.button(text="🔙 Назад", callback_data="back_worker")
+    builder.adjust(1)
+    
+    await call.message.edit_text(text, parse_mode="HTML", reply_markup=builder.as_markup())
+
+# ==========================================
 # 👑 /admin
 # ==========================================
 @dp.message(Command("admin"))
 async def cmd_admin(message: types.Message):
-    logging.info(f"/admin from {message.from_user.id}, ADMIN_ID={ADMIN_ID}")
-    if message.from_user.id != ADMIN_ID:
+    logging.info(f"/admin from {message.from_user.id}, ADMIN_IDS={ADMIN_IDS}")
+    if message.from_user.id not in ADMIN_IDS:
         await message.answer("❌ Нет доступа")
         return
     
     settings = db_get_settings()
+    countries = db_get_country_bank_details()
+    
     text = (
         "👑 <b>ADMIN PANEL</b>\n\n"
-        f"Support: {settings.get('support_username')}\n"
-        f"Реквизиты: {settings.get('bank_details')}"
+        f"📞 Support: @{settings.get('support_username')}\n"
+        f"🏦 Стран с реквизитами: {len(countries)}\n"
+        f"💰 Минимальный депозит: ${settings.get('min_deposit')}"
     )
     await message.answer(text, parse_mode="HTML", reply_markup=kb_admin())
 
@@ -427,391 +649,176 @@ async def save_sup(message: types.Message, state: FSMContext):
         await message.answer("❌ Ошибка обновления. Проверьте логи.")
     await state.clear()
 
-@dp.callback_query(F.data == "adm_bank")
-async def adm_bank(call: types.CallbackQuery, state: FSMContext):
-    await state.set_state(AdminStates.changing_bank)
-    await call.message.edit_text("Введите реквизиты:")
+@dp.callback_query(F.data == "adm_countries")
+async def adm_countries(call: types.CallbackQuery):
+    """Показать список стран для редактирования реквизитов"""
+    countries = db_get_country_bank_details()
+    
+    if not countries:
+        await call.message.edit_text("❌ Страны не найдены. Проверьте базу данных.")
+        return
+    
+    text = "🏦 <b>РЕКВИЗИТЫ ПО СТРАНАМ</b>\n\nВыберите страну для редактирования:"
+    await call.message.edit_text(text, parse_mode="HTML", reply_markup=kb_countries())
 
-@dp.message(AdminStates.changing_bank)
-async def save_bank(message: types.Message, state: FSMContext):
-    success = db_update_settings("bank_details", message.text)
-    if success:
-        await message.answer(f"✅ Реквизиты обновлены:\n{message.text}")
-    else:
-        await message.answer("❌ Ошибка обновления. Проверьте логи.")
+@dp.callback_query(F.data.startswith("country_"))
+async def show_country_details(call: types.CallbackQuery, state: FSMContext):
+    """Показать детали страны и предложить редактирование"""
+    country_id = int(call.data.split("_")[1])
+    
+    try:
+        res = supabase.table("country_bank_details").select("*").eq("id", country_id).single().execute()
+        country = res.data
+        
+        if not country:
+            await call.answer("❌ Страна не найдена", show_alert=True)
+            return
+        
+        text = (
+            f"🏦 <b>{country['country_name']}</b>\n\n"
+            f"💱 Валюта: <b>{country['currency']}</b>\n"
+            f"📊 Курс к USD: <b>{country['exchange_rate']}</b>\n\n"
+            f"💳 <b>Текущие реквизиты:</b>\n"
+            f"<code>{country['bank_details']}</code>\n\n"
+            f"📅 Обновлено: {country.get('updated_at', 'Неизвестно')}"
+        )
+        
+        builder = InlineKeyboardBuilder()
+        builder.button(text="✏️ Изменить реквизиты", callback_data=f"edit_country_{country_id}")
+        builder.button(text="🔙 Назад к списку", callback_data="adm_countries")
+        builder.adjust(1)
+        
+        await call.message.edit_text(text, parse_mode="HTML", reply_markup=builder.as_markup())
+        
+    except Exception as e:
+        logging.error(f"Error showing country details: {e}")
+        await call.answer("❌ Ошибка получения данных", show_alert=True)
+
+@dp.callback_query(F.data.startswith("edit_country_"))
+async def edit_country_bank(call: types.CallbackQuery, state: FSMContext):
+    """Начать редактирование реквизитов страны"""
+    country_id = int(call.data.split("_")[2])
+    
+    try:
+        res = supabase.table("country_bank_details").select("*").eq("id", country_id).single().execute()
+        country = res.data
+        
+        if not country:
+            await call.answer("❌ Страна не найдена", show_alert=True)
+            return
+        
+        await state.update_data(country_id=country_id, country_name=country['country_name'])
+        await state.set_state(AdminStates.changing_country_bank)
+        
+        await call.message.edit_text(
+            f"✏️ <b>Редактирование реквизитов для {country['country_name']}</b>\n\n"
+            f"💳 <b>Текущие реквизиты:</b>\n<code>{country['bank_details']}</code>\n\n"
+            f"📝 <b>Формат реквизитов:</b>\n"
+            f"• Название банка\n"
+            f"• Номер карты/счета\n"
+            f"• Имя получателя\n"
+            f"• Дополнительная информация (если нужно)\n\n"
+            f"💡 <b>Пример:</b>\n"
+            f"<code>Сбербанк\n"
+            f"2202 2063 1234 5678\n"
+            f"Иван Иванов\n"
+            f"Переводы принимаются 24/7</code>\n\n"
+            f"✍️ Введите новые реквизиты:",
+            parse_mode="HTML"
+        )
+        
+    except Exception as e:
+        logging.error(f"Error starting country edit: {e}")
+        await call.answer("❌ Ошибка", show_alert=True)
+
+@dp.message(AdminStates.changing_country_bank)
+async def save_country_bank(message: types.Message, state: FSMContext):
+    """Сохранить новые реквизиты для страны"""
+    data = await state.get_data()
+    country_id = data.get('country_id')
+    country_name = data.get('country_name')
+    
+    # Проверяем длину реквизитов
+    if len(message.text.strip()) < 10:
+        await message.answer(
+            "❌ <b>Реквизиты слишком короткие!</b>\n\n"
+            "Минимальная длина: 10 символов\n"
+            "Попробуйте еще раз с полными данными.",
+            parse_mode="HTML"
+        )
+        return
+    
+    try:
+        logging.info(f"Updating bank details for country {country_name} (ID: {country_id})")
+        
+        result = supabase.table("country_bank_details").update({
+            "bank_details": message.text.strip()
+        }).eq("id", country_id).execute()
+        
+        logging.info(f"Update result: {result}")
+        
+        if result.data and len(result.data) > 0:
+            await message.answer(
+                f"✅ <b>Реквизиты успешно сохранены!</b>\n\n"
+                f"🏦 Страна: <b>{country_name}</b>\n"
+                f"💳 Новые реквизиты:\n<code>{message.text.strip()}</code>\n\n"
+                f"📅 Время обновления: {datetime.now().strftime('%d.%m.%Y %H:%M')}",
+                parse_mode="HTML"
+            )
+        else:
+            await message.answer(
+                f"❌ <b>Ошибка сохранения!</b>\n\n"
+                f"Реквизиты для {country_name} не были обновлены.\n"
+                f"Проверьте подключение к базе данных.",
+                parse_mode="HTML"
+            )
+            
+    except Exception as e:
+        logging.error(f"Error saving country bank details: {e}")
+        await message.answer(
+            f"❌ <b>Критическая ошибка!</b>\n\n"
+            f"Не удалось сохранить реквизиты для {country_name}\n"
+            f"Ошибка: <code>{str(e)}</code>\n\n"
+            f"Обратитесь к разработчику.",
+            parse_mode="HTML"
+        )
+    
     await state.clear()
+
+def db_update_settings(field, value):
+    try:
+        current = db_get_settings()
+        if current.get('id'):
+            logging.info(f"Updating settings: {field} = {value}")
+            result = supabase.table("settings").update({field: value}).eq("id", current['id']).execute()
+            logging.info(f"Settings update result: {result}")
+            return True
+        else:
+            logging.error("No settings ID found, cannot update")
+            return False
+    except Exception as e:
+        logging.error(f"Error updating settings: {e}")
+        return False
+
+@dp.callback_query(F.data == "back_admin")
+async def back_admin(call: types.CallbackQuery):
+    """Вернуться в главное админ меню"""
+    settings = db_get_settings()
+    countries = db_get_country_bank_details()
+    
+    text = (
+        "👑 <b>ADMIN PANEL</b>\n\n"
+        f"📞 Support: @{settings.get('support_username')}\n"
+        f"🏦 Стран с реквизитами: {len(countries)}\n"
+        f"💰 Минимальный депозит: ${settings.get('min_deposit')}"
+    )
+    await call.message.edit_text(text, parse_mode="HTML", reply_markup=kb_admin())
 
 @dp.callback_query(F.data == "ignore")
 async def ignore(call: types.CallbackQuery):
     await call.answer()
 
-# ==========================================
-# 💰 ОБРАБОТКА ПОПОЛНЕНИЙ
-# ==========================================
-@dp.callback_query(F.data.startswith("approve_deposit_"))
-async def approve_deposit(call: types.CallbackQuery):
-    """Подтверждение пополнения воркером"""
-    deposit_id = int(call.data.split("_")[2])
-    
-    try:
-        # Получаем информацию о запросе
-        res = supabase.table("deposit_requests").select("*").eq("id", deposit_id).single().execute()
-        
-        if not res.data:
-            await call.answer("❌ Запрос не найден", show_alert=True)
-            return
-        
-        request = res.data
-        
-        if request['status'] != 'pending':
-            await call.answer("⚠️ Запрос уже обработан", show_alert=True)
-            return
-        
-        # Обновляем статус запроса
-        supabase.table("deposit_requests").update({
-            'status': 'approved',
-            'processed_at': 'now()'
-        }).eq("id", deposit_id).execute()
-        
-        # Начисляем баланс пользователю
-        user_id = request['user_id']
-        amount_usd = request['amount_usd']
-        
-        user_data = db_get_user(user_id)
-        if user_data:
-            new_balance = user_data.get('balance', 0) + amount_usd
-            db_update_field(user_id, 'balance', new_balance)
-        
-        # Обновляем сообщение
-        await call.message.edit_text(
-            f"{call.message.text}\n\n✅ <b>ПОДТВЕРЖДЕНО</b>\n"
-            f"💵 Зачислено: ${amount_usd:.2f}",
-            parse_mode="HTML"
-        )
-        
-        await call.answer("✅ Пополнение подтверждено!")
-        
-        # Уведомляем пользователя
-        try:
-            await bot.send_message(
-                user_id,
-                f"✅ <b>Пополнение подтверждено!</b>\n\n"
-                f"💰 На ваш счет зачислено: <b>${amount_usd:.2f}</b>\n"
-                f"📊 Можете начинать торговать!",
-                parse_mode="HTML"
-            )
-        except Exception as e:
-            logging.error(f"Failed to notify user: {e}")
-            
-    except Exception as e:
-        logging.error(f"Error approving deposit: {e}")
-        await call.answer("❌ Ошибка обработки", show_alert=True)
-
-@dp.callback_query(F.data.startswith("reject_deposit_"))
-async def reject_deposit(call: types.CallbackQuery):
-    """Отклонение пополнения воркером"""
-    deposit_id = int(call.data.split("_")[2])
-    
-    try:
-        # Получаем информацию о запросе
-        res = supabase.table("deposit_requests").select("*").eq("id", deposit_id).single().execute()
-        
-        if not res.data:
-            await call.answer("❌ Запрос не найден", show_alert=True)
-            return
-        
-        request = res.data
-        
-        if request['status'] != 'pending':
-            await call.answer("⚠️ Запрос уже обработан", show_alert=True)
-            return
-        
-        # Обновляем статус запроса
-        supabase.table("deposit_requests").update({
-            'status': 'rejected',
-            'processed_at': 'now()'
-        }).eq("id", deposit_id).execute()
-        
-        # Обновляем сообщение
-        await call.message.edit_text(
-            f"{call.message.text}\n\n❌ <b>ОТКЛОНЕНО</b>",
-            parse_mode="HTML"
-        )
-        
-        await call.answer("❌ Пополнение отклонено")
-        
-        # Уведомляем пользователя
-        user_id = request['user_id']
-        try:
-            await bot.send_message(
-                user_id,
-                f"❌ <b>Пополнение отклонено</b>\n\n"
-                f"Ваш запрос на пополнение был отклонен.\n"
-                f"Если вы считаете это ошибкой, обратитесь в поддержку.",
-                parse_mode="HTML"
-            )
-        except Exception as e:
-            logging.error(f"Failed to notify user: {e}")
-            
-    except Exception as e:
-        logging.error(f"Error rejecting deposit: {e}")
-        await call.answer("❌ Ошибка обработки", show_alert=True)
-
-# ==========================================
-# 🧪 TEST COMMAND (для отладки)
-# ==========================================
-@dp.message(Command("test_settings"))
-async def test_settings(message: types.Message):
-    """Тестовая команда для проверки работы с настройками"""
-    if message.from_user.id != ADMIN_ID:
-        return
-    
-    try:
-        # Получаем текущие настройки
-        settings = db_get_settings()
-        
-        text = (
-            "🧪 <b>ТЕСТ НАСТРОЕК</b>\n\n"
-            f"ID: {settings.get('id', 'НЕТ')}\n"
-            f"Support: {settings.get('support_username', 'НЕТ')}\n"
-            f"Реквизиты: {settings.get('bank_details', 'НЕТ')}\n\n"
-            "Проверьте логи для деталей."
-        )
-        await message.answer(text, parse_mode="HTML")
-        
-    except Exception as e:
-        await message.answer(f"❌ Ошибка: {str(e)}")
-        logging.error(f"Test settings error: {e}")
-
-# ==========================================
-# 🌐 API ENDPOINTS (для уведомлений от WebApp)
-# ==========================================
-async def handle_notify(request):
-    """Обработка уведомлений от веб-приложения"""
-    try:
-        data = await request.json()
-        event_type = data.get('type')
-        user_id = data.get('user_id')
-        
-        if not user_id:
-            return web.json_response({'error': 'user_id required'}, status=400)
-        
-        # Получаем пользователя и его воркера
-        user = db_get_user(user_id)
-        if not user:
-            return web.json_response({'error': 'user not found'}, status=404)
-        
-        referrer_id = user.get('referrer_id')
-        if not referrer_id:
-            return web.json_response({'ok': True, 'message': 'no referrer'})
-        
-        user_name = user.get('full_name', 'Пользователь')
-        user_username = user.get('username', '')
-        
-        # Формируем уведомление в зависимости от типа события
-        if event_type == 'deal_opened':
-            symbol = data.get('symbol', '???')
-            deal_type = data.get('deal_type', '???')
-            amount = data.get('amount', 0)
-            
-            emoji = "🟢" if deal_type == "Long" else "🔴"
-            text = (
-                f"📊 <b>НОВАЯ СДЕЛКА</b>\n\n"
-                f"👤 {user_name} {user_username}\n"
-                f"💎 Пара: <b>{symbol}/USDT</b>\n"
-                f"{emoji} Тип: <b>{deal_type}</b>\n"
-                f"💰 Сумма: <b>{amount} USDT</b>\n"
-                f"⚡️ Плечо: x10"
-            )
-            
-        elif event_type == 'deal_closed':
-            symbol = data.get('symbol', '???')
-            deal_type = data.get('deal_type', '???')
-            amount = data.get('amount', 0)
-            pnl = data.get('pnl', 0)
-            is_win = data.get('is_win', False)
-            
-            emoji = "✅" if is_win else "❌"
-            result = "ВЫИГРЫШ" if is_win else "ПРОИГРЫШ"
-            pnl_sign = "+" if pnl > 0 else ""
-            
-            text = (
-                f"{emoji} <b>СДЕЛКА ЗАКРЫТА - {result}</b>\n\n"
-                f"👤 {user_name} {user_username}\n"
-                f"💎 Пара: <b>{symbol}/USDT</b>\n"
-                f"📈 Тип: <b>{deal_type}</b>\n"
-                f"💰 Ставка: <b>{amount} USDT</b>\n"
-                f"💵 Результат: <b>{pnl_sign}{pnl:.2f} USDT</b>"
-            )
-            
-        elif event_type == 'deposit_request':
-            amount_rub = data.get('amount_rub', 0)
-            amount_usd = data.get('amount_usd', 0)
-            method = data.get('method', 'unknown')
-            deposit_id = data.get('deposit_id')
-            
-            if not deposit_id:
-                return web.json_response({'error': 'deposit_id required'}, status=400)
-            
-            method_names = {
-                'card': '💳 Банковская карта',
-                'crypto': '₿ Криптовалюта'
-            }
-            method_display = method_names.get(method, method)
-            
-            text = (
-                f"💰 <b>НОВЫЙ ЗАПРОС НА ПОПОЛНЕНИЕ</b>\n\n"
-                f"👤 {user_name} {user_username}\n"
-                f"💵 Сумма: <b>{amount_rub:.0f} RUB</b> (≈ ${amount_usd:.2f})\n"
-                f"📋 Способ: <b>{method_display}</b>\n\n"
-                f"⏳ Ожидает вашего подтверждения"
-            )
-            
-            # Создаем клавиатуру с кнопками
-            builder = InlineKeyboardBuilder()
-            builder.button(text="✅ Подтвердить", callback_data=f"approve_deposit_{deposit_id}")
-            builder.button(text="❌ Отклонить", callback_data=f"reject_deposit_{deposit_id}")
-            builder.adjust(2)
-            
-            # Отправляем с клавиатурой
-            try:
-                await bot.send_message(referrer_id, text, parse_mode="HTML", reply_markup=builder.as_markup())
-                logging.info(f"Deposit request sent to {referrer_id}: deposit_id={deposit_id}")
-                return web.json_response({'ok': True})
-            except Exception as e:
-                logging.error(f"Failed to send deposit request: {e}")
-                return web.json_response({'error': str(e)}, status=500)
-            
-        else:
-            return web.json_response({'error': 'unknown event type'}, status=400)
-        
-        # Отправляем уведомление воркеру (для других типов событий)
-        try:
-            await bot.send_message(referrer_id, text, parse_mode="HTML")
-            logging.info(f"Notification sent to {referrer_id}: {event_type}")
-        except Exception as e:
-            logging.error(f"Failed to send notification: {e}")
-            return web.json_response({'error': str(e)}, status=500)
-        
-        return web.json_response({'ok': True})
-        
-    except Exception as e:
-        logging.error(f"API error: {e}")
-        return web.json_response({'error': str(e)}, status=500)
-
-async def handle_health(request):
-    """Health check endpoint"""
-    return web.json_response({'status': 'ok'})
-
-# ==========================================
-# 🔥 ЗАПУСК
-# ==========================================
-# 🔥 ЗАПУСК
-# ==========================================
-async def handle_deposit_realtime():
-    """Обработка новых запросов на пополнение через Supabase Realtime"""
-    
-    def on_deposit_insert(payload):
-        """Callback для новых запросов на пополнение"""
-        try:
-            request = payload['new']
-            deposit_id = request['id']
-            user_id = request['user_id']
-            worker_id = request['worker_id']
-            amount_rub = request['amount_rub']
-            amount_usd = request['amount_usd']
-            method = request['method']
-            
-            if not worker_id:
-                logging.warning(f"Deposit request {deposit_id} has no worker_id")
-                return
-            
-            # Получаем информацию о пользователе
-            user = db_get_user(user_id)
-            if not user:
-                logging.error(f"User {user_id} not found")
-                return
-            
-            user_name = user.get('full_name', 'Пользователь')
-            user_username = user.get('username', '')
-            
-            method_names = {
-                'card': '💳 Банковская карта',
-                'crypto': '₿ Криптовалюта'
-            }
-            method_display = method_names.get(method, method)
-            
-            text = (
-                f"💰 <b>НОВЫЙ ЗАПРОС НА ПОПОЛНЕНИЕ</b>\n\n"
-                f"👤 {user_name} {user_username}\n"
-                f"💵 Сумма: <b>{amount_rub:.0f} RUB</b> (≈ ${amount_usd:.2f})\n"
-                f"📋 Способ: <b>{method_display}</b>\n\n"
-                f"⏳ Ожидает вашего подтверждения"
-            )
-            
-            # Создаем клавиатуру с кнопками
-            builder = InlineKeyboardBuilder()
-            builder.button(text="✅ Подтвердить", callback_data=f"approve_deposit_{deposit_id}")
-            builder.button(text="❌ Отклонить", callback_data=f"reject_deposit_{deposit_id}")
-            builder.adjust(2)
-            
-            # Отправляем асинхронно
-            asyncio.create_task(
-                bot.send_message(worker_id, text, parse_mode="HTML", reply_markup=builder.as_markup())
-            )
-            logging.info(f"Deposit notification sent to worker {worker_id}: deposit_id={deposit_id}")
-            
-        except Exception as e:
-            logging.error(f"Error handling deposit realtime: {e}")
-    
-    # Подписываемся на INSERT в deposit_requests
-    try:
-        channel = supabase.channel('deposit_requests_channel')
-        channel.on_postgres_changes(
-            event='INSERT',
-            schema='public',
-            table='deposit_requests',
-            callback=on_deposit_insert
-        ).subscribe()
-        
-        logging.info("✅ Subscribed to deposit_requests realtime updates")
-        
-    except Exception as e:
-        logging.error(f"Failed to subscribe to deposit_requests: {e}")
-
 async def main():
-    print("🚀 Бот запущен!")
-    
-    # Запускаем Realtime подписку на пополнения
-    await handle_deposit_realtime()
-    
-    # Создаём веб-сервер для API (оставляем для совместимости)
-    app = web.Application()
-    app.router.add_post('/api/notify', handle_notify)
-    app.router.add_get('/health', handle_health)
-    
-    # Добавляем CORS headers
-    async def cors_middleware(app, handler):
-        async def middleware_handler(request):
-            if request.method == 'OPTIONS':
-                return web.Response(headers={
-                    'Access-Control-Allow-Origin': '*',
-                    'Access-Control-Allow-Methods': 'POST, GET, OPTIONS',
-                    'Access-Control-Allow-Headers': 'Content-Type',
-                })
-            response = await handler(request)
-            response.headers['Access-Control-Allow-Origin'] = '*'
-            return response
-        return middleware_handler
-    
-    app.middlewares.append(cors_middleware)
-    
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, '0.0.0.0', API_PORT)
-    await site.start()
-    print(f"🌐 API сервер запущен на порту {API_PORT}")
-    
     # Запускаем бота
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
