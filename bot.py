@@ -23,7 +23,7 @@ SUPABASE_URL = "https://wzpywfedbowlosmvecos.supabase.co"
 SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Ind6cHl3ZmVkYm93bG9zbXZlY29zIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjYzNTAyMzksImV4cCI6MjA4MTkyNjIzOX0.TmAYsmA8iwSpLPKOHIZM7jf3GLE3oeT7wD-l0ALwBPw"
 
 # 🌐 WEBAPP
-WEBAPP_URL = "https://017c60b5d4b0.ngrok-free.app"
+WEBAPP_URL = "https://tontrade-web-h31w.vercel.app/"
 API_PORT = 8080
 
 # Инициализация
