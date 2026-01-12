@@ -14,20 +14,15 @@ from supabase import create_client, Client
 # ==========================================
 # ⚙️ КОНФИГУРАЦИЯ
 # ==========================================
-# 🤖 TELEGRAM BOT
-BOT_TOKEN = "7769124785:AAE46Zt6jh9IPVt4IB4u0j8kgEVg2NpSYa0"
-ADMIN_IDS = [844012884, 8162019020]  # Список администраторов
+BOT_TOKEN = "7894645996:AAHZL9WTldT0esrSefGrKiMCaBbz_WOcJLY"
+ADMIN_IDS = [844012884, 8162019020]
 
-# 🔐 SUPABASE (ТЕ ЖЕ ДАННЫЕ, ЧТО И ДЛЯ REACT!)
-# URL проекта (одинаковый для бота и сайта)
 SUPABASE_URL = "https://wzpywfedbowlosmvecos.supabase.co"
 SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Ind6cHl3ZmVkYm93bG9zbXZlY29zIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjYzNTAyMzksImV4cCI6MjA4MTkyNjIzOX0.TmAYsmA8iwSpLPKOHIZM7jf3GLE3oeT7wD-l0ALwBPw"
 
-# 🌐 WEBAPP
 WEBAPP_URL = "https://tontrade.vercel.app/"
 API_PORT = 8080
 
-# Инициализация
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
@@ -47,6 +42,7 @@ class WorkerStates(StatesGroup):
     creating_check_amount = State()
     creating_check_activations = State()
     selecting_withdraw_message = State()
+    entering_check_code = State()  # Ввод кода чека для активации
 
 class AdminStates(StatesGroup):
     changing_support = State()
@@ -127,7 +123,7 @@ def db_get_worker_min_deposit(worker_id):
         res = supabase.table("users").select("worker_min_deposit").eq("user_id", worker_id).single().execute()
         if res.data and res.data.get('worker_min_deposit') is not None:
             return res.data['worker_min_deposit']
-        return 10.0  # Значение по умолчанию
+        return 10.0
     except Exception as e:
         logging.error(f"Error getting worker min deposit for {worker_id}: {e}")
         return 10.0
@@ -142,6 +138,21 @@ def db_update_worker_min_deposit(worker_id, min_deposit):
         return True
     except Exception as e:
         logging.error(f"Error updating worker min deposit for {worker_id}: {e}")
+        return False
+
+def db_update_settings(field, value):
+    try:
+        current = db_get_settings()
+        if current.get('id'):
+            logging.info(f"Updating settings: {field} = {value}")
+            result = supabase.table("settings").update({field: value}).eq("id", current['id']).execute()
+            logging.info(f"Settings update result: {result}")
+            return True
+        else:
+            logging.error("No settings ID found, cannot update")
+            return False
+    except Exception as e:
+        logging.error(f"Error updating settings: {e}")
         return False
 
 def db_get_country_bank_details():
@@ -206,7 +217,7 @@ def db_check_promo_exists(code):
         return len(res.data) > 0
     except Exception as e:
         logging.error(f"Error checking promo exists: {e}")
-        return True  # В случае ошибки считаем, что существует
+        return True
 
 # ==========================================
 # 🎫 CHECK FUNCTIONS
@@ -214,7 +225,6 @@ def db_check_promo_exists(code):
 def db_create_check(creator_id, amount, max_activations=1, description=None):
     """Создает новый чек"""
     try:
-        # Вызываем функцию создания чека в базе данных
         result = supabase.rpc('create_check', {
             'p_creator_id': creator_id,
             'p_amount': amount,
@@ -376,73 +386,81 @@ def db_get_deposit_by_id(deposit_id):
         return None
 
 # ==========================================
-# 🎹 KEYBOARDS
+# 🎹 KEYBOARDS - УЛУЧШЕННЫЕ
 # ==========================================
 def kb_start(support_username, user_id):
+    """Главная клавиатура приветствия"""
     builder = InlineKeyboardBuilder()
-    # Передаём user_id через URL для надёжной идентификации
     webapp_url_with_id = f"{WEBAPP_URL}?tgid={user_id}"
-    builder.button(text="🚀 Открыть TonTrader", web_app=types.WebAppInfo(url=webapp_url_with_id))
+    builder.button(text="🚀 Открыть терминал", web_app=types.WebAppInfo(url=webapp_url_with_id))
     clean_support = support_username.replace("@", "")
     builder.button(text="🎫 Чеки", callback_data="checks_menu")
-    builder.button(text="💬 Support", url=f"https://t.me/{clean_support}")
-    builder.adjust(1, 2)  # Первая кнопка на всю ширину, следующие две в ряд
+    builder.button(text="💬 Поддержка", url=f"https://t.me/{clean_support}")
+    builder.adjust(1, 2)
     return builder.as_markup()
 
 def kb_worker():
+    """Воркер панель - inline кнопки"""
     builder = InlineKeyboardBuilder()
     builder.button(text="🦣 Мои мамонты", callback_data="my_mammoths")
-    builder.button(text="🎁 Создать промокод", callback_data="create_promo")
-    builder.button(text="📋 Мои промокоды", callback_data="my_promos")
-    builder.button(text="💰 Минимальный депозит", callback_data="set_min_deposit")
-    builder.button(text="📖 Мануал по заводу", url="https://telegra.ph/IRL--WEB-TRADE-MANUAL-12-30")
-    builder.button(text="🤖 Мануал по боту", url="https://telegra.ph/WORKER-MANUAL--TonTrader-01-12")
-    builder.adjust(1, 1, 1, 1, 2)
-    return builder.as_markup()
-
-def kb_mammoth_control(user_id, luck, is_kyc):
-    builder = InlineKeyboardBuilder()
-    luck_map = {"win": "🟢 ВИН", "lose": "🔴 ЛУЗ", "default": "🎲 РАНДОМ"}
-    builder.button(text=f"Удача: {luck_map.get(luck, '🎲')}", callback_data=f"menu_luck_{user_id}")
-    builder.button(text="💰 Изменить баланс", callback_data=f"set_balance_{user_id}")
-    kyc_text = "🛡 Убрать KYC" if is_kyc else "🛡 Дать KYC"
-    builder.button(text=kyc_text, callback_data=f"toggle_kyc_{user_id}")
-    builder.button(text="💬 Паста вывода", callback_data=f"set_withdraw_msg_{user_id}")
-    builder.button(text="✉️ Написать", callback_data=f"send_msg_{user_id}")
-    builder.button(text="🔙 Назад", callback_data="my_mammoths")
-    builder.adjust(1)
-    return builder.as_markup()
-
-def kb_luck_select(user_id):
-    builder = InlineKeyboardBuilder()
-    builder.button(text="🟢 Всегда ВИН", callback_data=f"set_luck_{user_id}_win")
-    builder.button(text="🔴 Всегда ЛУЗ", callback_data=f"set_luck_{user_id}_lose")
-    builder.button(text="🎲 Рандом", callback_data=f"set_luck_{user_id}_default")
-    builder.button(text="🔙 Назад", callback_data=f"open_mammoth_{user_id}")
-    builder.adjust(1)
-    return builder.as_markup()
-
-def kb_admin():
-    builder = InlineKeyboardBuilder()
-    builder.button(text="✏️ Изменить Support", callback_data="adm_sup")
-    builder.button(text="🏦 Реквизиты по странам", callback_data="adm_countries")
-    builder.adjust(1)
+    builder.button(text="🎁 Промокоды", callback_data="promo_menu")
+    builder.button(text="💰 Мин. депозит", callback_data="set_min_deposit")
+    builder.button(text="📖 Мануал", url="https://telegra.ph/IRL--WEB-TRADE-MANUAL-12-30")
+    builder.button(text="🤖 Инструкция", url="https://telegra.ph/WORKER-MANUAL--TonTrader-01-12")
+    builder.adjust(1, 2, 2)
     return builder.as_markup()
 
 def kb_worker_reply():
-    """Reply клавиатура с кнопкой /worker для быстрого доступа"""
+    """Reply клавиатура для быстрого доступа к воркер-панели"""
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text="⚡️ Worker Panel"), KeyboardButton(text="🏠 Главное меню")]
+            [KeyboardButton(text="⚡️ Панель управления"), KeyboardButton(text="🦣 Мамонты")],
+            [KeyboardButton(text="🎁 Промокоды"), KeyboardButton(text="🏠 Главное меню")]
         ],
         resize_keyboard=True,
         is_persistent=True
     )
 
-def kb_cancel():
-    """Inline клавиатура с кнопкой отмены"""
+def kb_admin_reply():
+    """Reply клавиатура для админ-панели"""
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="👑 Админ панель"), KeyboardButton(text="🏠 Главное меню")]
+        ],
+        resize_keyboard=True,
+        is_persistent=True
+    )
+
+def kb_mammoth_control(user_id, luck, is_kyc):
+    """Управление мамонтом"""
     builder = InlineKeyboardBuilder()
-    builder.button(text="❌ Отмена", callback_data="cancel_action")
+    luck_map = {"win": "🟢 ВИН", "lose": "🔴 ЛУЗ", "default": "🎲 РАНДОМ"}
+    builder.button(text=f"🍀 {luck_map.get(luck, '🎲 РАНДОМ')}", callback_data=f"menu_luck_{user_id}")
+    builder.button(text="💰 Баланс", callback_data=f"set_balance_{user_id}")
+    kyc_text = "🛡 Снять KYC" if is_kyc else "🛡 Дать KYC"
+    builder.button(text=kyc_text, callback_data=f"toggle_kyc_{user_id}")
+    builder.button(text="💬 Паста", callback_data=f"set_withdraw_msg_{user_id}")
+    builder.button(text="✉️ Сообщение", callback_data=f"send_msg_{user_id}")
+    builder.button(text="◀️ К мамонтам", callback_data="my_mammoths")
+    builder.adjust(2, 2, 2)
+    return builder.as_markup()
+
+def kb_luck_select(user_id):
+    """Выбор удачи"""
+    builder = InlineKeyboardBuilder()
+    builder.button(text="🟢 Всегда выигрывает", callback_data=f"set_luck_{user_id}_win")
+    builder.button(text="🔴 Всегда проигрывает", callback_data=f"set_luck_{user_id}_lose")
+    builder.button(text="🎲 Случайный результат", callback_data=f"set_luck_{user_id}_default")
+    builder.button(text="◀️ Назад", callback_data=f"open_mammoth_{user_id}")
+    builder.adjust(1)
+    return builder.as_markup()
+
+def kb_admin():
+    """Админ панель"""
+    builder = InlineKeyboardBuilder()
+    builder.button(text="📞 Изменить Support", callback_data="adm_sup")
+    builder.button(text="🏦 Реквизиты стран", callback_data="adm_countries")
+    builder.adjust(1)
     return builder.as_markup()
 
 def kb_countries():
@@ -456,67 +474,173 @@ def kb_countries():
             callback_data=f"country_{country['id']}"
         )
     
-    builder.button(text="🔙 Назад", callback_data="back_admin")
+    builder.button(text="◀️ Назад", callback_data="back_admin")
     builder.adjust(1)
     return builder.as_markup()
 
-# ==========================================
-# 🚀 /start - теперь обрабатывается через CommandStart(deep_link=True) выше
-# ==========================================
+def kb_back_to(callback_data: str, text: str = "◀️ Назад"):
+    """Универсальная кнопка назад"""
+    builder = InlineKeyboardBuilder()
+    builder.button(text=text, callback_data=callback_data)
+    return builder.as_markup()
 
 # ==========================================
-# ⚡️ /worker
+# 📝 ТЕКСТОВЫЕ ШАБЛОНЫ - ПРОФЕССИОНАЛЬНЫЕ
 # ==========================================
-@dp.message(Command("worker"))
-async def cmd_worker(message: types.Message):
-    user_id = message.from_user.id
-    mammoths = db_get_mammoths(user_id)
-    count = len(mammoths) if mammoths else 0
-    
-    # Получаем количество промокодов
-    promos = db_get_worker_promos(user_id)
-    promo_count = len(promos) if promos else 0
-    
-    # Получаем текущий минимальный депозит воркера
-    min_deposit = db_get_worker_min_deposit(user_id)
-    
-    bot_info = await bot.get_me()
-    ref_link = f"https://t.me/{bot_info.username}?start={user_id}"
-    
-    text = (
-        "⚡️ <b>WORKER PANEL</b>\n\n"
-        f"👤 ID: <code>{user_id}</code>\n"
-        f"🦣 Мамонтов: {count}\n"
-        f"🎁 Промокодов: {promo_count}\n"
-        f"💰 Мин. депозит: <b>${min_deposit:.2f}</b>\n\n"
-        f"🔗 Реф-ссылка:\n<code>{ref_link}</code>"
+def get_welcome_text():
+    """Приветственное сообщение"""
+    return (
+        "🚀 <b>TonTrader</b>\n\n"
+        "<blockquote>💎 Торговля криптовалютой нового поколения\n"
+        "⚡️ Мгновенные сделки без комиссий\n"
+        "🔐 Безопасность на уровне банков</blockquote>\n\n"
+        "<i>Нажмите кнопку ниже, чтобы открыть терминал</i>"
     )
-    # Показываем reply клавиатуру с кнопкой Worker
-    await message.answer(text, parse_mode="HTML", reply_markup=kb_worker())
-    await message.answer("📱 Используйте меню ниже для быстрого доступа:", reply_markup=kb_worker_reply())
 
-# Обработка reply кнопки "Worker Panel"
-@dp.message(F.text == "⚡️ Worker Panel")
-async def worker_panel_button(message: types.Message):
-    """Обработка нажатия reply кнопки Worker Panel"""
-    await cmd_worker(message)
+def get_worker_panel_text(user_id, count, promo_count, min_deposit, ref_link):
+    """Текст воркер-панели"""
+    return (
+        "⚡️ <b>ПАНЕЛЬ УПРАВЛЕНИЯ</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"<blockquote>👤 <b>ID:</b> <code>{user_id}</code>\n"
+        f"🦣 <b>Мамонтов:</b> {count}\n"
+        f"🎁 <b>Промокодов:</b> {promo_count}\n"
+        f"💰 <b>Мин. депозит:</b> ${min_deposit:.2f}</blockquote>\n\n"
+        f"🔗 <b>Ваша реферальная ссылка:</b>\n"
+        f"<code>{ref_link}</code>\n\n"
+        "<i>Отправьте эту ссылку потенциальным клиентам</i>"
+    )
 
-# Обработка reply кнопки "Главное меню"
-@dp.message(F.text == "🏠 Главное меню")
-async def main_menu_button(message: types.Message):
-    """Возврат в главное меню с удалением reply клавиатуры"""
+def get_mammoth_profile_text(m, withdraw_name):
+    """Профиль мамонта"""
+    kyc_status = "✅ Верифицирован" if m.get('is_kyc') else "❌ Не пройдена"
+    luck_map = {"win": "🟢 Выигрыш", "lose": "🔴 Проигрыш", "default": "🎲 Случайно"}
+    luck_text = luck_map.get(m.get('luck', 'default'), '🎲 Случайно')
+    
+    return (
+        "🦣 <b>ПРОФИЛЬ КЛИЕНТА</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"<blockquote>👤 <b>Username:</b> {m.get('username', 'Не указан')}\n"
+        f"🆔 <b>ID:</b> <code>{m['user_id']}</code>\n"
+        f"📱 <b>Имя:</b> {m.get('full_name', 'Не указано')}</blockquote>\n\n"
+        f"💰 <b>Баланс:</b> <code>${m.get('balance', 0):.2f}</code>\n"
+        f"🍀 <b>Режим удачи:</b> {luck_text}\n"
+        f"🛡 <b>KYC:</b> {kyc_status}\n"
+        f"💬 <b>Паста вывода:</b> {withdraw_name}"
+    )
+
+def get_admin_panel_text(settings, countries_count):
+    """Текст админ-панели"""
+    return (
+        "👑 <b>ПАНЕЛЬ АДМИНИСТРАТОРА</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"<blockquote>📞 <b>Support:</b> @{settings.get('support_username')}\n"
+        f"🏦 <b>Стран:</b> {countries_count}\n"
+        f"💰 <b>Мин. депозит:</b> ${settings.get('min_deposit')}</blockquote>\n\n"
+        "<i>Выберите действие из меню ниже</i>"
+    )
+
+def get_checks_menu_text(balance, active_count, total_count):
+    """Меню чеков"""
+    return (
+        "🎫 <b>СИСТЕМА ЧЕКОВ</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
+        "<blockquote>Чеки позволяют мгновенно передавать средства "
+        "любому пользователю Telegram. Создайте чек и поделитесь ссылкой.</blockquote>\n\n"
+        f"💰 <b>Ваш баланс:</b> <code>${balance:.2f}</code>\n"
+        f"📋 <b>Активных чеков:</b> {active_count}\n"
+        f"📊 <b>Всего создано:</b> {total_count}"
+    )
+
+# ==========================================
+# 🚀 КОМАНДА /start
+# ==========================================
+@dp.message(CommandStart(deep_link=True))
+async def cmd_start_deeplink(message: types.Message, command: CommandObject):
+    """Обработка deeplink для чеков и рефералов"""
     user_id = message.from_user.id
+    username = message.from_user.username
+    full_name = message.from_user.full_name
+    
+    photo_url = await get_user_photo_url(user_id)
+    args = command.args
+    
+    # Проверяем, это чек или реферал
+    if args and args.startswith('check_'):
+        check_code = args.replace('check_', '')
+        db_upsert_user(user_id, username, full_name, None, photo_url)
+        
+        result = db_activate_check(check_code, user_id)
+        
+        if result:
+            success = result.get('success')
+            msg = result.get('message')
+            amount = result.get('amount', 0)
+            
+            if success:
+                await message.answer(
+                    "✅ <b>ЧЕК УСПЕШНО АКТИВИРОВАН</b>\n"
+                    "━━━━━━━━━━━━━━━━━━━━\n\n"
+                    f"<blockquote>💰 Зачислено: <b>${amount:.2f}</b>\n"
+                    f"🎫 Код: <code>{check_code}</code></blockquote>\n\n"
+                    "<i>Средства уже на вашем балансе. Откройте терминал для торговли.</i>",
+                    parse_mode="HTML"
+                )
+            else:
+                await message.answer(
+                    "⚠️ <b>НЕ УДАЛОСЬ АКТИВИРОВАТЬ ЧЕК</b>\n\n"
+                    f"<blockquote>{msg}</blockquote>",
+                    parse_mode="HTML"
+                )
+        
+        settings = db_get_settings()
+        welcome = get_welcome_text()
+        await send_welcome_with_photo(message, welcome, settings, user_id)
+        return
+    
+    # Обычная логика /start с рефералом
+    referrer_id = None
+    if args and args.isdigit():
+        possible_ref = int(args)
+        if possible_ref != user_id and db_get_user(possible_ref):
+            referrer_id = possible_ref
+
+    is_new = db_upsert_user(user_id, username, full_name, referrer_id, photo_url)
+
+    if is_new and referrer_id:
+        try:
+            notify_text = (
+                "🦣 <b>НОВЫЙ КЛИЕНТ</b>\n"
+                "━━━━━━━━━━━━━━━━━━━━\n\n"
+                f"<blockquote>👤 {f'@{username}' if username else 'Без username'}\n"
+                f"🆔 <code>{user_id}</code>\n"
+                f"📱 {full_name}</blockquote>\n\n"
+                "<i>Клиент зарегистрирован по вашей ссылке</i>"
+            )
+            await bot.send_message(referrer_id, notify_text, parse_mode="HTML")
+        except Exception as e:
+            logging.error(f"Notify error: {e}")
+    
     settings = db_get_settings()
-    welcome = (
-        "🚀 <b>Добро пожаловать в TonTrader!</b>\n\n"
-        "Современная трейдинговая платформа с удобной интеграцией в Telegram.\n"
-        "Торгуй быстро, безопасно и без лишних шагов.\n\n"
-        "👇 Нажми кнопку ниже, чтобы открыть биржу и начать"
-    )
-    # Удаляем reply клавиатуру
-    await message.answer("🏠 Возвращаемся в главное меню...", reply_markup=ReplyKeyboardRemove())
+    welcome = get_welcome_text()
+    await send_welcome_with_photo(message, welcome, settings, user_id)
+
+@dp.message(CommandStart())
+async def cmd_start_simple(message: types.Message):
+    """Обработка обычного /start без параметров"""
+    user_id = message.from_user.id
+    username = message.from_user.username
+    full_name = message.from_user.full_name
     
-    # Отправляем с картинкой
+    photo_url = await get_user_photo_url(user_id)
+    db_upsert_user(user_id, username, full_name, None, photo_url)
+    
+    settings = db_get_settings()
+    welcome = get_welcome_text()
+    await send_welcome_with_photo(message, welcome, settings, user_id)
+
+async def send_welcome_with_photo(message: types.Message, welcome: str, settings: dict, user_id: int):
+    """Отправка приветствия с фото"""
     try:
         from aiogram.types import FSInputFile
         import os
@@ -524,150 +648,244 @@ async def main_menu_button(message: types.Message):
         
         if os.path.exists(photo_path) and os.path.isfile(photo_path):
             photo = FSInputFile(photo_path)
-            await message.answer_photo(photo, caption=welcome, parse_mode="HTML", reply_markup=kb_start(settings.get('support_username', 'support'), user_id))
+            await message.answer_photo(
+                photo, 
+                caption=welcome, 
+                parse_mode="HTML", 
+                reply_markup=kb_start(settings.get('support_username', 'support'), user_id)
+            )
         else:
-            await message.answer(welcome, parse_mode="HTML", reply_markup=kb_start(settings.get('support_username', 'support'), user_id))
+            await message.answer(
+                welcome, 
+                parse_mode="HTML", 
+                reply_markup=kb_start(settings.get('support_username', 'support'), user_id)
+            )
     except Exception as e:
         logging.error(f"Error sending photo: {e}")
-        await message.answer(welcome, parse_mode="HTML", reply_markup=kb_start(settings.get('support_username', 'support'), user_id))
+        await message.answer(
+            welcome, 
+            parse_mode="HTML", 
+            reply_markup=kb_start(settings.get('support_username', 'support'), user_id)
+        )
 
-@dp.callback_query(F.data == "my_mammoths")
-async def show_mammoths(call: types.CallbackQuery):
-    mammoths = db_get_mammoths(call.from_user.id)
-    
-    builder = InlineKeyboardBuilder()
-    if mammoths:
-        for m in mammoths:
-            label = f"{m.get('full_name', 'User')} | {m.get('balance', 0)}$"
-            builder.button(text=label, callback_data=f"open_mammoth_{m['user_id']}")
-    else:
-        builder.button(text="Пока нет мамонтов", callback_data="ignore")
-    builder.button(text="🔙 Назад", callback_data="back_worker")
-    builder.adjust(1)
-    
-    await call.message.edit_text("🦣 <b>Ваши мамонты:</b>", parse_mode="HTML", reply_markup=builder.as_markup())
-
-@dp.callback_query(F.data == "back_worker")
-async def back_worker(call: types.CallbackQuery):
-    user_id = call.from_user.id
+# ==========================================
+# ⚡️ КОМАНДА /worker
+# ==========================================
+@dp.message(Command("worker"))
+async def cmd_worker(message: types.Message):
+    """Воркер панель"""
+    user_id = message.from_user.id
     mammoths = db_get_mammoths(user_id)
     count = len(mammoths) if mammoths else 0
-    
-    # Получаем количество промокодов
     promos = db_get_worker_promos(user_id)
     promo_count = len(promos) if promos else 0
-    
-    # Получаем текущий минимальный депозит воркера
     min_deposit = db_get_worker_min_deposit(user_id)
     
     bot_info = await bot.get_me()
     ref_link = f"https://t.me/{bot_info.username}?start={user_id}"
     
-    text = (
-        "⚡️ <b>WORKER PANEL</b>\n\n"
-        f"👤 ID: <code>{user_id}</code>\n"
-        f"🦣 Мамонтов: {count}\n"
-        f"🎁 Промокодов: {promo_count}\n"
-        f"💰 Мин. депозит: <b>${min_deposit:.2f}</b>\n\n"
-        f"🔗 Реф-ссылка:\n<code>{ref_link}</code>"
+    text = get_worker_panel_text(user_id, count, promo_count, min_deposit, ref_link)
+    
+    await message.answer(text, parse_mode="HTML", reply_markup=kb_worker())
+    await message.answer(
+        "📱 <i>Используйте меню ниже для быстрого доступа</i>", 
+        parse_mode="HTML", 
+        reply_markup=kb_worker_reply()
     )
+
+# Reply кнопки для воркера
+@dp.message(F.text == "⚡️ Панель управления")
+async def worker_panel_button(message: types.Message):
+    await cmd_worker(message)
+
+@dp.message(F.text == "🦣 Мамонты")
+async def mammoths_button(message: types.Message):
+    """Быстрый доступ к мамонтам через reply кнопку"""
+    mammoths = db_get_mammoths(message.from_user.id)
+    
+    builder = InlineKeyboardBuilder()
+    if mammoths:
+        for m in mammoths:
+            balance = m.get('balance', 0)
+            name = m.get('full_name', 'Клиент')[:20]
+            builder.button(text=f"👤 {name} • ${balance:.0f}", callback_data=f"open_mammoth_{m['user_id']}")
+    else:
+        builder.button(text="📭 Пока нет клиентов", callback_data="ignore")
+    builder.button(text="◀️ В панель", callback_data="back_worker")
+    builder.adjust(1)
+    
+    await message.answer(
+        "🦣 <b>ВАШИ КЛИЕНТЫ</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"<i>Всего: {len(mammoths) if mammoths else 0}</i>",
+        parse_mode="HTML", 
+        reply_markup=builder.as_markup()
+    )
+
+@dp.message(F.text == "🎁 Промокоды")
+async def promos_button(message: types.Message):
+    """Быстрый доступ к промокодам через reply кнопку"""
+    creator_id = message.from_user.id
+    promos = db_get_worker_promos(creator_id)
+    
+    builder = InlineKeyboardBuilder()
+    builder.button(text="➕ Создать промокод", callback_data="create_promo")
+    if promos:
+        builder.button(text="📋 Мои промокоды", callback_data="my_promos")
+    builder.button(text="◀️ В панель", callback_data="back_worker")
+    builder.adjust(1)
+    
+    await message.answer(
+        "🎁 <b>ПРОМОКОДЫ</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"<blockquote>Создавайте промокоды для привлечения клиентов. "
+        f"При активации клиент получит бонус на баланс.</blockquote>\n\n"
+        f"📊 <b>Создано:</b> {len(promos) if promos else 0}",
+        parse_mode="HTML",
+        reply_markup=builder.as_markup()
+    )
+
+@dp.message(F.text == "🏠 Главное меню")
+async def main_menu_button(message: types.Message):
+    """Возврат в главное меню"""
+    user_id = message.from_user.id
+    settings = db_get_settings()
+    welcome = get_welcome_text()
+    
+    await message.answer("🏠 <i>Возвращаемся в главное меню...</i>", parse_mode="HTML", reply_markup=ReplyKeyboardRemove())
+    await send_welcome_with_photo(message, welcome, settings, user_id)
+
+@dp.message(F.text == "👑 Админ панель")
+async def admin_panel_button(message: types.Message):
+    """Быстрый доступ к админ-панели через reply кнопку"""
+    if message.from_user.id not in ADMIN_IDS:
+        await message.answer("⛔️ <b>Доступ запрещен</b>", parse_mode="HTML")
+        return
+    await cmd_admin(message)
+
+# ==========================================
+# 🦣 УПРАВЛЕНИЕ МАМОНТАМИ
+# ==========================================
+@dp.callback_query(F.data == "my_mammoths")
+async def show_mammoths(call: types.CallbackQuery):
+    """Список мамонтов"""
+    mammoths = db_get_mammoths(call.from_user.id)
+    
+    builder = InlineKeyboardBuilder()
+    if mammoths:
+        for m in mammoths:
+            balance = m.get('balance', 0)
+            name = m.get('full_name', 'Клиент')[:20]
+            builder.button(text=f"👤 {name} • ${balance:.0f}", callback_data=f"open_mammoth_{m['user_id']}")
+    else:
+        builder.button(text="📭 Пока нет клиентов", callback_data="ignore")
+    builder.button(text="◀️ В панель", callback_data="back_worker")
+    builder.adjust(1)
+    
+    await call.message.edit_text(
+        "🦣 <b>ВАШИ КЛИЕНТЫ</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"<i>Всего: {len(mammoths) if mammoths else 0}</i>",
+        parse_mode="HTML", 
+        reply_markup=builder.as_markup()
+    )
+
+@dp.callback_query(F.data == "back_worker")
+async def back_worker(call: types.CallbackQuery):
+    """Возврат в воркер панель"""
+    user_id = call.from_user.id
+    mammoths = db_get_mammoths(user_id)
+    count = len(mammoths) if mammoths else 0
+    promos = db_get_worker_promos(user_id)
+    promo_count = len(promos) if promos else 0
+    min_deposit = db_get_worker_min_deposit(user_id)
+    
+    bot_info = await bot.get_me()
+    ref_link = f"https://t.me/{bot_info.username}?start={user_id}"
+    
+    text = get_worker_panel_text(user_id, count, promo_count, min_deposit, ref_link)
     await call.message.edit_text(text, parse_mode="HTML", reply_markup=kb_worker())
 
 @dp.callback_query(F.data.startswith("open_mammoth_"))
 async def open_mammoth(call: types.CallbackQuery):
+    """Открыть профиль мамонта"""
     target_id = int(call.data.split("_")[2])
     m = db_get_user(target_id)
     
     if not m:
-        await call.answer("Мамонт не найден", show_alert=True)
+        await call.answer("⚠️ Клиент не найден в базе данных", show_alert=True)
         return
     
-    # Получаем текущую пасту вывода
     withdraw_type = m.get('withdraw_message_type', 'default')
     templates = db_get_withdraw_message_templates()
     current_template = next((t for t in templates if t['message_type'] == withdraw_type), None)
     withdraw_name = current_template['title'] if current_template else 'Стандартная'
     
-    text = (
-        "🦣 <b>ПРОФИЛЬ МАМОНТА</b>\n"
-        "➖➖➖➖➖➖➖\n"
-        f"👤 {m.get('username', 'Нет')} ({m['user_id']})\n"
-        f"📱 {m.get('full_name', '-')}\n"
-        f"💰 Баланс: <b>{m.get('balance', 0)} USD</b>\n"
-        f"🍀 Удача: <b>{m.get('luck', 'default').upper()}</b>\n"
-        f"🛡 KYC: {'✅' if m.get('is_kyc') else '❌'}\n"
-        f"💬 Паста: <b>{withdraw_name}</b>"
-    )
+    text = get_mammoth_profile_text(m, withdraw_name)
     await call.message.edit_text(text, parse_mode="HTML", reply_markup=kb_mammoth_control(target_id, m.get('luck'), m.get('is_kyc')))
 
 # === LUCK ===
 @dp.callback_query(F.data.startswith("menu_luck_"))
 async def menu_luck(call: types.CallbackQuery):
+    """Меню выбора удачи"""
     target_id = int(call.data.split("_")[2])
-    await call.message.edit_text("🍀 Выберите удачу:", reply_markup=kb_luck_select(target_id))
+    await call.message.edit_text(
+        "🍀 <b>РЕЖИМ УДАЧИ</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
+        "<blockquote>Выберите, как будут завершаться сделки клиента:</blockquote>",
+        parse_mode="HTML",
+        reply_markup=kb_luck_select(target_id)
+    )
 
 @dp.callback_query(F.data.startswith("set_luck_"))
 async def set_luck(call: types.CallbackQuery):
+    """Установка удачи"""
     parts = call.data.split("_")
     target_id = int(parts[2])
     mode = parts[3]
     db_update_field(target_id, "luck", mode)
-    await call.answer(f"Удача: {mode.upper()}")
     
-    # Возврат в профиль
+    luck_names = {"win": "Выигрыш", "lose": "Проигрыш", "default": "Случайно"}
+    await call.answer(f"✅ Режим: {luck_names.get(mode, mode)}")
+    
     m = db_get_user(target_id)
-    
-    # Получаем текущую пасту вывода
     withdraw_type = m.get('withdraw_message_type', 'default')
     templates = db_get_withdraw_message_templates()
     current_template = next((t for t in templates if t['message_type'] == withdraw_type), None)
     withdraw_name = current_template['title'] if current_template else 'Стандартная'
     
-    text = (
-        "🦣 <b>ПРОФИЛЬ МАМОНТА</b>\n"
-        "➖➖➖➖➖➖➖\n"
-        f"👤 {m.get('username', 'Нет')} ({m['user_id']})\n"
-        f"📱 {m.get('full_name', '-')}\n"
-        f"💰 Баланс: <b>{m.get('balance', 0)} USD</b>\n"
-        f"🍀 Удача: <b>{m.get('luck', 'default').upper()}</b>\n"
-        f"🛡 KYC: {'✅' if m.get('is_kyc') else '❌'}\n"
-        f"💬 Паста: <b>{withdraw_name}</b>"
-    )
+    text = get_mammoth_profile_text(m, withdraw_name)
     await call.message.edit_text(text, parse_mode="HTML", reply_markup=kb_mammoth_control(target_id, m.get('luck'), m.get('is_kyc')))
 
 # === KYC ===
 @dp.callback_query(F.data.startswith("toggle_kyc_"))
 async def toggle_kyc(call: types.CallbackQuery):
+    """Переключение KYC"""
     target_id = int(call.data.split("_")[2])
     user = db_get_user(target_id)
     new_status = not user.get('is_kyc')
     db_update_field(target_id, "is_kyc", new_status)
-    await call.answer("KYC изменен!")
+    
+    status_text = "выдан" if new_status else "снят"
+    await call.answer(f"✅ KYC {status_text}")
     
     m = db_get_user(target_id)
-    
-    # Получаем текущую пасту вывода
     withdraw_type = m.get('withdraw_message_type', 'default')
     templates = db_get_withdraw_message_templates()
     current_template = next((t for t in templates if t['message_type'] == withdraw_type), None)
     withdraw_name = current_template['title'] if current_template else 'Стандартная'
     
-    text = (
-        "🦣 <b>ПРОФИЛЬ МАМОНТА</b>\n"
-        "➖➖➖➖➖➖➖\n"
-        f"👤 {m.get('username', 'Нет')} ({m['user_id']})\n"
-        f"📱 {m.get('full_name', '-')}\n"
-        f"💰 Баланс: <b>{m.get('balance', 0)} USD</b>\n"
-        f"🍀 Удача: <b>{m.get('luck', 'default').upper()}</b>\n"
-        f"🛡 KYC Верефикация: {'✅' if m.get('is_kyc') else '❌'}\n"
-        f"💬 Паста: <b>{withdraw_name}</b>"
-    )
+    text = get_mammoth_profile_text(m, withdraw_name)
     await call.message.edit_text(text, parse_mode="HTML", reply_markup=kb_mammoth_control(target_id, m.get('luck'), m.get('is_kyc')))
 
 # === BALANCE ===
 @dp.callback_query(F.data.startswith("set_balance_"))
 async def ask_balance(call: types.CallbackQuery, state: FSMContext):
+    """Запрос нового баланса"""
     target_id = int(call.data.split("_")[2])
+    user = db_get_user(target_id)
+    current_balance = user.get('balance', 0) if user else 0
+    
     await state.update_data(target_id=target_id)
     await state.set_state(WorkerStates.changing_balance)
     
@@ -675,23 +893,25 @@ async def ask_balance(call: types.CallbackQuery, state: FSMContext):
     builder.button(text="❌ Отмена", callback_data=f"open_mammoth_{target_id}")
     
     await call.message.edit_text(
-        "💰 <b>ИЗМЕНЕНИЕ БАЛАНСА</b>\n\n"
-        "Введите новый баланс в USD:",
+        "💰 <b>ИЗМЕНЕНИЕ БАЛАНСА</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"<blockquote>Текущий баланс: <b>${current_balance:.2f}</b></blockquote>\n\n"
+        "Введите новую сумму в USD:",
         parse_mode="HTML",
         reply_markup=builder.as_markup()
     )
 
 @dp.message(WorkerStates.changing_balance)
 async def set_balance(message: types.Message, state: FSMContext):
+    """Установка нового баланса"""
     try:
-        new_balance = float(message.text)
+        new_balance = float(message.text.replace(',', '.').strip())
         data = await state.get_data()
         target_id = data['target_id']
         db_update_field(target_id, "balance", new_balance)
         
         await state.clear()
         
-        # Авто-возврат в профиль мамонта
         m = db_get_user(target_id)
         withdraw_type = m.get('withdraw_message_type', 'default')
         templates = db_get_withdraw_message_templates()
@@ -699,25 +919,25 @@ async def set_balance(message: types.Message, state: FSMContext):
         withdraw_name = current_template['title'] if current_template else 'Стандартная'
         
         text = (
-            f"✅ Баланс изменен на <b>${new_balance:.2f}</b>\n\n"
-            "🦣 <b>ПРОФИЛЬ МАМОНТА</b>\n"
-            "➖➖➖➖➖➖➖\n"
-            f"👤 {m.get('username', 'Нет')} ({m['user_id']})\n"
-            f"📱 {m.get('full_name', '-')}\n"
-            f"💰 Баланс: <b>{m.get('balance', 0)} USD</b>\n"
-            f"🍀 Удача: <b>{m.get('luck', 'default').upper()}</b>\n"
-            f"🛡 KYC: {'✅' if m.get('is_kyc') else '❌'}\n"
-            f"💬 Паста: <b>{withdraw_name}</b>"
+            f"✅ <b>Баланс обновлен:</b> <code>${new_balance:.2f}</code>\n\n"
+            + get_mammoth_profile_text(m, withdraw_name)
         )
         await message.answer(text, parse_mode="HTML", reply_markup=kb_mammoth_control(target_id, m.get('luck'), m.get('is_kyc')))
         
     except ValueError:
-        await message.answer("❌ Введите число!")
+        await message.answer(
+            "⚠️ <b>Некорректный формат</b>\n\n"
+            "<i>Введите число, например: 100 или 250.50</i>",
+            parse_mode="HTML"
+        )
 
 # === SEND MESSAGE ===
 @dp.callback_query(F.data.startswith("send_msg_"))
 async def ask_msg(call: types.CallbackQuery, state: FSMContext):
+    """Запрос сообщения для отправки"""
     target_id = int(call.data.split("_")[2])
+    user = db_get_user(target_id)
+    
     await state.update_data(target_id=target_id)
     await state.set_state(WorkerStates.sending_message)
     
@@ -725,45 +945,44 @@ async def ask_msg(call: types.CallbackQuery, state: FSMContext):
     builder.button(text="❌ Отмена", callback_data=f"open_mammoth_{target_id}")
     
     await call.message.edit_text(
-        "✉️ <b>ОТПРАВКА СООБЩЕНИЯ</b>\n\n"
-        "Введите текст сообщения для мамонта:",
+        "✉️ <b>ОТПРАВКА СООБЩЕНИЯ</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"<blockquote>Получатель: {user.get('full_name', 'Клиент')}</blockquote>\n\n"
+        "Введите текст сообщения:",
         parse_mode="HTML",
         reply_markup=builder.as_markup()
     )
 
 @dp.message(WorkerStates.sending_message)
 async def send_msg(message: types.Message, state: FSMContext):
+    """Отправка сообщения мамонту"""
     data = await state.get_data()
     target_id = data['target_id']
     
     try:
-        await bot.send_message(target_id, f"🔔 <b>Уведомление</b>\n\n{message.text}", parse_mode="HTML")
+        await bot.send_message(
+            target_id, 
+            f"🔔 <b>Уведомление от TonTrader</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"{message.text}",
+            parse_mode="HTML"
+        )
         success = True
-    except:
+    except Exception as e:
+        logging.error(f"Error sending message to {target_id}: {e}")
         success = False
     
     await state.clear()
     
-    # Авто-возврат в профиль мамонта
     m = db_get_user(target_id)
     withdraw_type = m.get('withdraw_message_type', 'default')
     templates = db_get_withdraw_message_templates()
     current_template = next((t for t in templates if t['message_type'] == withdraw_type), None)
     withdraw_name = current_template['title'] if current_template else 'Стандартная'
     
-    status = "✅ Сообщение отправлено!" if success else "❌ Ошибка отправки"
+    status = "✅ <b>Сообщение доставлено</b>" if success else "⚠️ <b>Не удалось доставить сообщение</b>\n<i>Возможно, пользователь заблокировал бота</i>"
     
-    text = (
-        f"{status}\n\n"
-        "🦣 <b>ПРОФИЛЬ МАМОНТА</b>\n"
-        "➖➖➖➖➖➖➖\n"
-        f"👤 {m.get('username', 'Нет')} ({m['user_id']})\n"
-        f"📱 {m.get('full_name', '-')}\n"
-        f"💰 Баланс: <b>{m.get('balance', 0)} USD</b>\n"
-        f"🍀 Удача: <b>{m.get('luck', 'default').upper()}</b>\n"
-        f"🛡 KYC: {'✅' if m.get('is_kyc') else '❌'}\n"
-        f"💬 Паста: <b>{withdraw_name}</b>"
-    )
+    text = f"{status}\n\n" + get_mammoth_profile_text(m, withdraw_name)
     await message.answer(text, parse_mode="HTML", reply_markup=kb_mammoth_control(target_id, m.get('luck'), m.get('is_kyc')))
 
 # === WITHDRAW MESSAGE ===
@@ -774,21 +993,22 @@ async def set_withdraw_message_menu(call: types.CallbackQuery):
     user = db_get_user(target_id)
     
     if not user:
-        await call.answer("Мамонт не найден", show_alert=True)
+        await call.answer("⚠️ Клиент не найден", show_alert=True)
         return
     
     current_type = user.get('withdraw_message_type', 'default')
     templates = db_get_withdraw_message_templates()
     
     if not templates:
-        await call.answer("Ошибка загрузки шаблонов", show_alert=True)
+        await call.answer("⚠️ Шаблоны не загружены", show_alert=True)
         return
     
     text = (
-        "💬 <b>ПАСТА ВЫВОДА</b>\n\n"
-        f"👤 Мамонт: {user.get('full_name', 'Неизвестно')}\n"
-        f"📝 Текущая паста: <b>{current_type}</b>\n\n"
-        "Выберите сообщение, которое увидит мамонт при попытке вывода средств:"
+        "💬 <b>ПАСТА ВЫВОДА</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"<blockquote>Клиент: {user.get('full_name', 'Неизвестно')}\n"
+        f"Текущая: <b>{current_type}</b></blockquote>\n\n"
+        "<i>Выберите сообщение для показа при выводе:</i>"
     )
     
     builder = InlineKeyboardBuilder()
@@ -797,8 +1017,6 @@ async def set_withdraw_message_menu(call: types.CallbackQuery):
         msg_type = template['message_type']
         title = template['title']
         icon = template.get('icon', '⚠️')
-        
-        # Отмечаем текущую пасту
         prefix = "✅ " if msg_type == current_type else ""
         
         builder.button(
@@ -806,7 +1024,7 @@ async def set_withdraw_message_menu(call: types.CallbackQuery):
             callback_data=f"preview_msg_{target_id}_{msg_type}"
         )
     
-    builder.button(text="🔙 Назад", callback_data=f"open_mammoth_{target_id}")
+    builder.button(text="◀️ Назад", callback_data=f"open_mammoth_{target_id}")
     builder.adjust(1)
     
     await call.message.edit_text(text, parse_mode="HTML", reply_markup=builder.as_markup())
@@ -814,9 +1032,7 @@ async def set_withdraw_message_menu(call: types.CallbackQuery):
 @dp.callback_query(F.data.startswith("preview_msg_"))
 async def preview_withdraw_message(call: types.CallbackQuery):
     """Предпросмотр пасты вывода"""
-    # Формат: preview_msg_{target_id}_{message_type}
-    # message_type может содержать подчеркивания, поэтому используем split с limit
-    parts = call.data.split("_", 3)  # Разбиваем только на 4 части: preview, msg, target_id, message_type
+    parts = call.data.split("_", 3)
     target_id = int(parts[2])
     message_type = parts[3]
     
@@ -824,8 +1040,7 @@ async def preview_withdraw_message(call: types.CallbackQuery):
     template = next((t for t in templates if t['message_type'] == message_type), None)
     
     if not template:
-        await call.answer("Шаблон не найден", show_alert=True)
-        logging.error(f"Template not found: {message_type}, available: {[t['message_type'] for t in templates]}")
+        await call.answer("⚠️ Шаблон не найден", show_alert=True)
         return
     
     icon = template.get('icon', '⚠️')
@@ -834,28 +1049,25 @@ async def preview_withdraw_message(call: types.CallbackQuery):
     button_text = template.get('button_text', 'Поддержка')
     
     preview_text = (
-        "👁 <b>ПРЕДПРОСМОТР</b>\n\n"
-        "Так мамонт увидит сообщение при попытке вывода:\n\n"
-        "━━━━━━━━━━━━━━━━━━\n"
-        f"{icon} <b>{title}</b>\n\n"
-        f"{description}\n"
-        "━━━━━━━━━━━━━━━━━━\n\n"
-        f"Кнопка: [{button_text}]\n\n"
-        "Подтвердить выбор этой пасты?"
+        "👁 <b>ПРЕДПРОСМОТР</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
+        "<i>Клиент увидит это при попытке вывода:</i>\n\n"
+        f"<blockquote>{icon} <b>{title}</b>\n\n"
+        f"{description}</blockquote>\n\n"
+        f"🔘 Кнопка: <code>[{button_text}]</code>"
     )
     
     builder = InlineKeyboardBuilder()
-    builder.button(text="✅ Подтвердить", callback_data=f"confirm_msg_{target_id}_{message_type}")
-    builder.button(text="🔙 Назад к выбору", callback_data=f"set_withdraw_msg_{target_id}")
-    builder.adjust(1)
+    builder.button(text="✅ Применить", callback_data=f"confirm_msg_{target_id}_{message_type}")
+    builder.button(text="◀️ К выбору", callback_data=f"set_withdraw_msg_{target_id}")
+    builder.adjust(2)
     
     await call.message.edit_text(preview_text, parse_mode="HTML", reply_markup=builder.as_markup())
 
 @dp.callback_query(F.data.startswith("confirm_msg_"))
 async def confirm_withdraw_message(call: types.CallbackQuery):
     """Подтверждение выбора пасты вывода"""
-    # Формат: confirm_msg_{target_id}_{message_type}
-    parts = call.data.split("_", 3)  # Разбиваем только на 4 части
+    parts = call.data.split("_", 3)
     target_id = int(parts[2])
     message_type = parts[3]
     
@@ -865,97 +1077,141 @@ async def confirm_withdraw_message(call: types.CallbackQuery):
         templates = db_get_withdraw_message_templates()
         template = next((t for t in templates if t['message_type'] == message_type), None)
         
-        if template:
-            await call.answer(
-                f"✅ Паста установлена: {template['title']}",
-                show_alert=True
-            )
-        else:
-            await call.answer("✅ Паста установлена", show_alert=True)
+        await call.answer(f"✅ Установлено: {template['title'] if template else message_type}", show_alert=True)
         
-        # Возвращаемся в профиль мамонта
         m = db_get_user(target_id)
-        text = (
-            "🦣 <b>ПРОФИЛЬ МАМОНТА</b>\n"
-            "➖➖➖➖➖➖➖\n"
-            f"👤 {m.get('username', 'Нет')} ({m['user_id']})\n"
-            f"📱 {m.get('full_name', '-')}\n"
-            f"💰 Баланс: <b>{m.get('balance', 0)} USD</b>\n"
-            f"🍀 Удача: <b>{m.get('luck', 'default').upper()}</b>\n"
-            f"🛡 KYC: {'✅' if m.get('is_kyc') else '❌'}\n"
-            f"💬 Паста вывода: <b>{message_type}</b>"
-        )
+        text = get_mammoth_profile_text(m, template['title'] if template else message_type)
         await call.message.edit_text(text, parse_mode="HTML", reply_markup=kb_mammoth_control(target_id, m.get('luck'), m.get('is_kyc')))
     else:
-        await call.answer("❌ Ошибка установки пасты", show_alert=True)
+        await call.answer("⚠️ Ошибка сохранения", show_alert=True)
 
 # ==========================================
 # 🎁 ПРОМОКОДЫ
 # ==========================================
+@dp.callback_query(F.data == "promo_menu")
+async def promo_menu(call: types.CallbackQuery):
+    """Меню промокодов"""
+    creator_id = call.from_user.id
+    promos = db_get_worker_promos(creator_id)
+    
+    builder = InlineKeyboardBuilder()
+    builder.button(text="➕ Создать промокод", callback_data="create_promo")
+    if promos:
+        builder.button(text="📋 Мои промокоды", callback_data="my_promos")
+    builder.button(text="◀️ В панель", callback_data="back_worker")
+    builder.adjust(1)
+    
+    await call.message.edit_text(
+        "🎁 <b>ПРОМОКОДЫ</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
+        "<blockquote>Создавайте промокоды для привлечения клиентов. "
+        "При активации клиент получит бонус на баланс.</blockquote>\n\n"
+        f"📊 <b>Создано:</b> {len(promos) if promos else 0}",
+        parse_mode="HTML",
+        reply_markup=builder.as_markup()
+    )
+
 @dp.callback_query(F.data == "create_promo")
 async def create_promo_start(call: types.CallbackQuery, state: FSMContext):
+    """Начало создания промокода"""
     await state.set_state(WorkerStates.creating_promo_code)
     
     builder = InlineKeyboardBuilder()
-    builder.button(text="❌ Отмена", callback_data="back_worker")
+    builder.button(text="❌ Отмена", callback_data="promo_menu")
     
     await call.message.edit_text(
-        "🎁 <b>СОЗДАНИЕ ПРОМОКОДА</b>\n\n"
-        "Введите текст промокода (только английские буквы и цифры):",
+        "🎁 <b>СОЗДАНИЕ ПРОМОКОДА</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
+        "<blockquote>Шаг 1 из 3</blockquote>\n\n"
+        "Введите код промокода:\n"
+        "<i>Только латинские буквы, цифры, дефисы</i>",
         parse_mode="HTML",
         reply_markup=builder.as_markup()
     )
 
 @dp.message(WorkerStates.creating_promo_code)
 async def create_promo_code(message: types.Message, state: FSMContext):
+    """Ввод кода промокода"""
     code = message.text.strip().upper()
     
-    # Проверяем формат кода
     if not code.replace('_', '').replace('-', '').isalnum():
-        await message.answer("❌ Промокод может содержать только буквы, цифры, дефисы и подчеркивания!")
+        await message.answer(
+            "⚠️ <b>Недопустимые символы</b>\n\n"
+            "<i>Используйте только буквы, цифры, дефисы и подчеркивания</i>",
+            parse_mode="HTML"
+        )
         return
     
     if len(code) < 3 or len(code) > 20:
-        await message.answer("❌ Длина промокода должна быть от 3 до 20 символов!")
+        await message.answer(
+            "⚠️ <b>Неверная длина</b>\n\n"
+            "<i>Код должен быть от 3 до 20 символов</i>",
+            parse_mode="HTML"
+        )
         return
     
-    # Проверяем, не существует ли уже такой промокод
     if db_check_promo_exists(code):
-        await message.answer("❌ Промокод с таким названием уже существует! Попробуйте другой.")
+        await message.answer(
+            "⚠️ <b>Код занят</b>\n\n"
+            "<i>Промокод с таким названием уже существует</i>",
+            parse_mode="HTML"
+        )
         return
     
     await state.update_data(promo_code=code)
     await state.set_state(WorkerStates.creating_promo_amount)
     await message.answer(
-        f"✅ Промокод: <b>{code}</b>\n\n"
-        f"💰 Теперь введите сумму бонуса в USD (например: 50):",
+        "🎁 <b>СОЗДАНИЕ ПРОМОКОДА</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"<blockquote>Шаг 2 из 3\n"
+        f"Код: <code>{code}</code></blockquote>\n\n"
+        "Введите сумму бонуса в USD:",
         parse_mode="HTML"
     )
 
 @dp.message(WorkerStates.creating_promo_amount)
 async def create_promo_amount(message: types.Message, state: FSMContext):
+    """Ввод суммы бонуса"""
     try:
-        amount = float(message.text)
+        amount = float(message.text.replace(',', '.').strip())
         if amount <= 0 or amount > 1000:
-            await message.answer("❌ Сумма должна быть от 0.01 до 1000 USD!")
+            await message.answer(
+                "⚠️ <b>Недопустимая сумма</b>\n\n"
+                "<i>Укажите от 0.01 до 1000 USD</i>",
+                parse_mode="HTML"
+            )
             return
         
+        data = await state.get_data()
         await state.update_data(promo_amount=amount)
         await state.set_state(WorkerStates.creating_promo_activations)
         await message.answer(
-            f"💰 Сумма бонуса: <b>${amount:.2f}</b>\n\n"
-            f"🔢 Введите максимальное количество активаций (1-10000):",
+            "🎁 <b>СОЗДАНИЕ ПРОМОКОДА</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"<blockquote>Шаг 3 из 3\n"
+            f"Код: <code>{data['promo_code']}</code>\n"
+            f"Бонус: <b>${amount:.2f}</b></blockquote>\n\n"
+            "Введите макс. количество активаций (1-10000):",
             parse_mode="HTML"
         )
     except ValueError:
-        await message.answer("❌ Введите корректную сумму (например: 50 или 25.5)!")
+        await message.answer(
+            "⚠️ <b>Некорректный формат</b>\n\n"
+            "<i>Введите число, например: 50 или 25.5</i>",
+            parse_mode="HTML"
+        )
 
 @dp.message(WorkerStates.creating_promo_activations)
 async def create_promo_activations(message: types.Message, state: FSMContext):
+    """Ввод количества активаций и создание промокода"""
     try:
-        activations = int(message.text)
+        activations = int(message.text.strip())
         if activations <= 0 or activations > 10000:
-            await message.answer("❌ Количество активаций должно быть от 1 до 10000!")
+            await message.answer(
+                "⚠️ <b>Недопустимое значение</b>\n\n"
+                "<i>Укажите от 1 до 10000</i>",
+                parse_mode="HTML"
+            )
             return
         
         data = await state.get_data()
@@ -963,13 +1219,10 @@ async def create_promo_activations(message: types.Message, state: FSMContext):
         amount = data['promo_amount']
         creator_id = message.from_user.id
         
-        # Создаем промокод в базе
         promo = db_create_promo_code(creator_id, code, amount, activations)
-        
         await state.clear()
         
         if promo:
-            # Авто-возврат в воркер панель
             mammoths = db_get_mammoths(creator_id)
             count = len(mammoths) if mammoths else 0
             promos = db_get_worker_promos(creator_id)
@@ -980,64 +1233,67 @@ async def create_promo_activations(message: types.Message, state: FSMContext):
             ref_link = f"https://t.me/{bot_info.username}?start={creator_id}"
             
             text = (
-                f"🎉 <b>ПРОМОКОД СОЗДАН!</b>\n\n"
-                f"🎁 Код: <code>{code}</code>\n"
+                "✅ <b>ПРОМОКОД СОЗДАН</b>\n"
+                "━━━━━━━━━━━━━━━━━━━━\n\n"
+                f"<blockquote>🎁 Код: <code>{code}</code>\n"
                 f"💰 Бонус: <b>${amount:.2f}</b>\n"
-                f"🔢 Макс. активаций: <b>{activations}</b>\n\n"
-                "➖➖➖➖➖➖➖\n"
-                "⚡️ <b>WORKER PANEL</b>\n\n"
-                f"👤 ID: <code>{creator_id}</code>\n"
-                f"🦣 Мамонтов: {count}\n"
-                f"🎁 Промокодов: {promo_count}\n"
-                f"💰 Мин. депозит: <b>${min_deposit:.2f}</b>\n\n"
-                f"🔗 Реф-ссылка:\n<code>{ref_link}</code>"
+                f"🔢 Активаций: <b>{activations}</b></blockquote>\n\n"
+                + get_worker_panel_text(creator_id, count, promo_count, min_deposit, ref_link)
             )
             await message.answer(text, parse_mode="HTML", reply_markup=kb_worker())
         else:
-            await message.answer("❌ Ошибка создания промокода. Попробуйте еще раз.")
+            await message.answer(
+                "⚠️ <b>Ошибка создания</b>\n\n"
+                "<i>Попробуйте еще раз позже</i>",
+                parse_mode="HTML"
+            )
         
     except ValueError:
-        await message.answer("❌ Введите корректное число!")
+        await message.answer(
+            "⚠️ <b>Некорректный формат</b>\n\n"
+            "<i>Введите целое число</i>",
+            parse_mode="HTML"
+        )
 
 @dp.callback_query(F.data == "my_promos")
 async def show_my_promos(call: types.CallbackQuery):
+    """Список промокодов"""
     creator_id = call.from_user.id
     promos = db_get_worker_promos(creator_id)
     
     if not promos:
         builder = InlineKeyboardBuilder()
-        builder.button(text="🎁 Создать первый промокод", callback_data="create_promo")
-        builder.button(text="🔙 Назад", callback_data="back_worker")
+        builder.button(text="➕ Создать первый", callback_data="create_promo")
+        builder.button(text="◀️ Назад", callback_data="promo_menu")
         builder.adjust(1)
         
         await call.message.edit_text(
-            "📋 <b>МОИ ПРОМОКОДЫ</b>\n\n"
-            "У вас пока нет созданных промокодов.",
+            "📋 <b>МОИ ПРОМОКОДЫ</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━\n\n"
+            "<i>У вас пока нет промокодов</i>",
             parse_mode="HTML",
             reply_markup=builder.as_markup()
         )
         return
     
-    # Формируем список промокодов
-    text = "📋 <b>МОИ ПРОМОКОДЫ</b>\n\n"
+    text = "📋 <b>МОИ ПРОМОКОДЫ</b>\n━━━━━━━━━━━━━━━━━━━━\n\n"
     
-    for promo in promos[:10]:  # Показываем только первые 10
+    for promo in promos[:10]:
         status = "🟢" if promo.get('is_active') else "🔴"
         activations = promo.get('current_activations', 0)
         max_activations = promo.get('max_activations', 0)
         
         text += (
             f"{status} <code>{promo['code']}</code>\n"
-            f"💰 ${promo['reward_amount']:.2f} | "
-            f"📊 {activations}/{max_activations}\n\n"
+            f"   💰 ${promo['reward_amount']:.2f} • 📊 {activations}/{max_activations}\n\n"
         )
     
     if len(promos) > 10:
-        text += f"... и еще {len(promos) - 10} промокодов\n\n"
+        text += f"<i>... и еще {len(promos) - 10}</i>\n\n"
     
     builder = InlineKeyboardBuilder()
-    builder.button(text="🎁 Создать новый", callback_data="create_promo")
-    builder.button(text="🔙 Назад", callback_data="back_worker")
+    builder.button(text="➕ Создать новый", callback_data="create_promo")
+    builder.button(text="◀️ Назад", callback_data="promo_menu")
     builder.adjust(1)
     
     await call.message.edit_text(text, parse_mode="HTML", reply_markup=builder.as_markup())
@@ -1057,14 +1313,11 @@ async def ask_min_deposit(call: types.CallbackQuery, state: FSMContext):
     builder.button(text="❌ Отмена", callback_data="back_worker")
     
     await call.message.edit_text(
-        f"💰 <b>МИНИМАЛЬНЫЙ ДЕПОЗИТ</b>\n\n"
-        f"📊 Текущее значение: <b>${current_min:.2f}</b>\n\n"
-        f"Эта сумма будет отображаться у всех ваших рефералов на сайте как минимальная сумма для пополнения.\n\n"
-        f"💡 <b>Примеры:</b>\n"
-        f"• 500 - для 500 USD\n"
-        f"• 1000 - для 1000 USD\n"
-        f"• 50 - для 50 USD\n\n"
-        f"✍️ Введите новую сумму минимального депозита в USD:",
+        "💰 <b>МИНИМАЛЬНЫЙ ДЕПОЗИТ</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"<blockquote>Текущее значение: <b>${current_min:.2f}</b></blockquote>\n\n"
+        "Эта сумма отображается у всех ваших рефералов как минимальная для пополнения.\n\n"
+        "Введите новую сумму в USD:",
         parse_mode="HTML",
         reply_markup=builder.as_markup()
     )
@@ -1073,35 +1326,30 @@ async def ask_min_deposit(call: types.CallbackQuery, state: FSMContext):
 async def save_min_deposit(message: types.Message, state: FSMContext):
     """Сохранение нового минимального депозита"""
     try:
-        new_min_deposit = float(message.text.strip())
+        new_min_deposit = float(message.text.replace(',', '.').strip())
         
-        # Валидация
         if new_min_deposit < 0:
             await message.answer(
-                "❌ <b>Ошибка!</b>\n\n"
-                "Минимальный депозит не может быть отрицательным.\n"
-                "Попробуйте еще раз.",
+                "⚠️ <b>Недопустимое значение</b>\n\n"
+                "<i>Сумма не может быть отрицательной</i>",
                 parse_mode="HTML"
             )
             return
         
         if new_min_deposit > 100000:
             await message.answer(
-                "❌ <b>Ошибка!</b>\n\n"
-                "Минимальный депозит слишком большой (максимум $100,000).\n"
-                "Попробуйте еще раз.",
+                "⚠️ <b>Слишком большая сумма</b>\n\n"
+                "<i>Максимум: $100,000</i>",
                 parse_mode="HTML"
             )
             return
         
-        # Обновляем в базе данных (теперь в таблице users для воркера)
         worker_id = message.from_user.id
         success = db_update_worker_min_deposit(worker_id, new_min_deposit)
         
         await state.clear()
         
         if success:
-            # Авто-возврат в воркер панель
             mammoths = db_get_mammoths(worker_id)
             count = len(mammoths) if mammoths else 0
             promos = db_get_worker_promos(worker_id)
@@ -1111,107 +1359,108 @@ async def save_min_deposit(message: types.Message, state: FSMContext):
             ref_link = f"https://t.me/{bot_info.username}?start={worker_id}"
             
             text = (
-                f"✅ <b>МИНИМАЛЬНЫЙ ДЕПОЗИТ ОБНОВЛЕН!</b>\n\n"
-                f"💰 Новое значение: <b>${new_min_deposit:.2f}</b>\n\n"
-                "➖➖➖➖➖➖➖\n"
-                "⚡️ <b>WORKER PANEL</b>\n\n"
-                f"👤 ID: <code>{worker_id}</code>\n"
-                f"🦣 Мамонтов: {count}\n"
-                f"🎁 Промокодов: {promo_count}\n"
-                f"💰 Мин. депозит: <b>${new_min_deposit:.2f}</b>\n\n"
-                f"🔗 Реф-ссылка:\n<code>{ref_link}</code>"
+                f"✅ <b>Минимальный депозит обновлен:</b> <code>${new_min_deposit:.2f}</code>\n\n"
+                + get_worker_panel_text(worker_id, count, promo_count, new_min_deposit, ref_link)
             )
             await message.answer(text, parse_mode="HTML", reply_markup=kb_worker())
-            
-            # Логируем изменение
             logging.info(f"Worker {worker_id} changed min_deposit to ${new_min_deposit:.2f}")
         else:
             await message.answer(
-                "❌ <b>Ошибка сохранения!</b>\n\n"
-                "Не удалось обновить минимальный депозит.\n"
-                "Проверьте подключение к базе данных или обратитесь к администратору.",
+                "⚠️ <b>Ошибка сохранения</b>\n\n"
+                "<i>Попробуйте позже или обратитесь к администратору</i>",
                 parse_mode="HTML"
             )
         
     except ValueError:
         await message.answer(
-            "❌ <b>Неверный формат!</b>\n\n"
-            "Введите корректное число (например: 500 или 1000.50).\n"
-            "Попробуйте еще раз.",
+            "⚠️ <b>Некорректный формат</b>\n\n"
+            "<i>Введите число, например: 500 или 1000.50</i>",
             parse_mode="HTML"
         )
 
 # ==========================================
-# 👑 /admin
+# 👑 АДМИН ПАНЕЛЬ
 # ==========================================
 @dp.message(Command("admin"))
 async def cmd_admin(message: types.Message):
+    """Админ панель"""
     logging.info(f"/admin from {message.from_user.id}, ADMIN_IDS={ADMIN_IDS}")
     if message.from_user.id not in ADMIN_IDS:
-        await message.answer("❌ Нет доступа")
+        await message.answer("⛔️ <b>Доступ запрещен</b>", parse_mode="HTML")
         return
     
     settings = db_get_settings()
     countries = db_get_country_bank_details()
     
-    text = (
-        "👑 <b>ADMIN PANEL</b>\n\n"
-        f"📞 Support: @{settings.get('support_username')}\n"
-        f"🏦 Стран с реквизитами: {len(countries)}\n"
-        f"💰 Минимальный депозит: ${settings.get('min_deposit')}"
-    )
+    text = get_admin_panel_text(settings, len(countries))
     await message.answer(text, parse_mode="HTML", reply_markup=kb_admin())
+    await message.answer(
+        "📱 <i>Используйте меню ниже для быстрого доступа</i>", 
+        parse_mode="HTML", 
+        reply_markup=kb_admin_reply()
+    )
 
 @dp.callback_query(F.data == "adm_sup")
 async def adm_sup(call: types.CallbackQuery, state: FSMContext):
+    """Изменение support username"""
+    settings = db_get_settings()
     await state.set_state(AdminStates.changing_support)
     
     builder = InlineKeyboardBuilder()
     builder.button(text="❌ Отмена", callback_data="back_admin")
     
     await call.message.edit_text(
-        "✏️ <b>ИЗМЕНЕНИЕ SUPPORT</b>\n\n"
-        "Введите @username саппорта:",
+        "📞 <b>ИЗМЕНЕНИЕ SUPPORT</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"<blockquote>Текущий: @{settings.get('support_username')}</blockquote>\n\n"
+        "Введите новый @username:",
         parse_mode="HTML",
         reply_markup=builder.as_markup()
     )
 
 @dp.message(AdminStates.changing_support)
 async def save_sup(message: types.Message, state: FSMContext):
-    success = db_update_settings("support_username", message.text.replace("@", ""))
+    """Сохранение support username"""
+    new_support = message.text.replace("@", "").strip()
+    success = db_update_settings("support_username", new_support)
     await state.clear()
     
     if success:
-        # Авто-возврат в админ панель
         settings = db_get_settings()
         countries = db_get_country_bank_details()
         
-        text = (
-            f"✅ Support обновлен на: {message.text}\n\n"
-            "👑 <b>ADMIN PANEL</b>\n\n"
-            f"📞 Support: @{settings.get('support_username')}\n"
-            f"🏦 Стран с реквизитами: {len(countries)}\n"
-            f"💰 Минимальный депозит: ${settings.get('min_deposit')}"
-        )
+        text = f"✅ <b>Support обновлен:</b> @{new_support}\n\n" + get_admin_panel_text(settings, len(countries))
         await message.answer(text, parse_mode="HTML", reply_markup=kb_admin())
     else:
-        await message.answer("❌ Ошибка обновления. Проверьте логи.")
+        await message.answer(
+            "⚠️ <b>Ошибка сохранения</b>\n\n"
+            "<i>Проверьте логи или обратитесь к разработчику</i>",
+            parse_mode="HTML"
+        )
 
 @dp.callback_query(F.data == "adm_countries")
 async def adm_countries(call: types.CallbackQuery):
-    """Показать список стран для редактирования реквизитов"""
+    """Список стран для редактирования реквизитов"""
     countries = db_get_country_bank_details()
     
     if not countries:
-        await call.message.edit_text("❌ Страны не найдены. Проверьте базу данных.")
+        await call.message.edit_text(
+            "⚠️ <b>Страны не найдены</b>\n\n"
+            "<i>Проверьте базу данных</i>",
+            parse_mode="HTML"
+        )
         return
     
-    text = "🏦 <b>РЕКВИЗИТЫ ПО СТРАНАМ</b>\n\nВыберите страну для редактирования:"
+    text = (
+        "🏦 <b>РЕКВИЗИТЫ ПО СТРАНАМ</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
+        "<i>Выберите страну для редактирования:</i>"
+    )
     await call.message.edit_text(text, parse_mode="HTML", reply_markup=kb_countries())
 
 @dp.callback_query(F.data.startswith("country_"))
 async def show_country_details(call: types.CallbackQuery, state: FSMContext):
-    """Показать детали страны и предложить редактирование"""
+    """Детали страны"""
     country_id = int(call.data.split("_")[1])
     
     try:
@@ -1219,32 +1468,32 @@ async def show_country_details(call: types.CallbackQuery, state: FSMContext):
         country = res.data
         
         if not country:
-            await call.answer("❌ Страна не найдена", show_alert=True)
+            await call.answer("⚠️ Страна не найдена", show_alert=True)
             return
         
         text = (
-            f"🏦 <b>{country['country_name']}</b>\n\n"
-            f"💱 Валюта: <b>{country['currency']}</b>\n"
-            f"📊 Курс к USD: <b>{country['exchange_rate']}</b>\n\n"
+            f"🏦 <b>{country['country_name']}</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"<blockquote>💱 Валюта: <b>{country['currency']}</b>\n"
+            f"📊 Курс к USD: <b>{country['exchange_rate']}</b></blockquote>\n\n"
             f"💳 <b>Текущие реквизиты:</b>\n"
-            f"<code>{country['bank_details']}</code>\n\n"
-            f"📅 Обновлено: {country.get('updated_at', 'Неизвестно')}"
+            f"<code>{country['bank_details']}</code>"
         )
         
         builder = InlineKeyboardBuilder()
-        builder.button(text="✏️ Изменить реквизиты", callback_data=f"edit_country_{country_id}")
-        builder.button(text="🔙 Назад к списку", callback_data="adm_countries")
-        builder.adjust(1)
+        builder.button(text="✏️ Изменить", callback_data=f"edit_country_{country_id}")
+        builder.button(text="◀️ К списку", callback_data="adm_countries")
+        builder.adjust(2)
         
         await call.message.edit_text(text, parse_mode="HTML", reply_markup=builder.as_markup())
         
     except Exception as e:
         logging.error(f"Error showing country details: {e}")
-        await call.answer("❌ Ошибка получения данных", show_alert=True)
+        await call.answer("⚠️ Ошибка загрузки", show_alert=True)
 
 @dp.callback_query(F.data.startswith("edit_country_"))
 async def edit_country_bank(call: types.CallbackQuery, state: FSMContext):
-    """Начать редактирование реквизитов страны"""
+    """Редактирование реквизитов страны"""
     country_id = int(call.data.split("_")[2])
     
     try:
@@ -1252,7 +1501,7 @@ async def edit_country_bank(call: types.CallbackQuery, state: FSMContext):
         country = res.data
         
         if not country:
-            await call.answer("❌ Страна не найдена", show_alert=True)
+            await call.answer("⚠️ Страна не найдена", show_alert=True)
             return
         
         await state.update_data(country_id=country_id, country_name=country['country_name'])
@@ -1262,69 +1511,55 @@ async def edit_country_bank(call: types.CallbackQuery, state: FSMContext):
         builder.button(text="❌ Отмена", callback_data=f"country_{country_id}")
         
         await call.message.edit_text(
-            f"✏️ <b>Редактирование реквизитов для {country['country_name']}</b>\n\n"
-            f"💳 <b>Текущие реквизиты:</b>\n<code>{country['bank_details']}</code>\n\n"
-            f"📝 <b>Формат реквизитов:</b>\n"
-            f"• Название банка\n"
-            f"• Номер карты/счета\n"
-            f"• Имя получателя\n"
-            f"• Дополнительная информация (если нужно)\n\n"
-            f"💡 <b>Пример:</b>\n"
-            f"<code>Сбербанк\n"
-            f"2202 2063 1234 5678\n"
-            f"Иван Иванов\n"
-            f"Переводы принимаются 24/7</code>\n\n"
-            f"✍️ Введите новые реквизиты:",
+            f"✏️ <b>РЕДАКТИРОВАНИЕ: {country['country_name']}</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"<blockquote>Текущие реквизиты:\n<code>{country['bank_details']}</code></blockquote>\n\n"
+            "Введите новые реквизиты:\n"
+            "<i>Название банка, номер карты/счета, имя получателя</i>",
             parse_mode="HTML",
             reply_markup=builder.as_markup()
         )
         
     except Exception as e:
         logging.error(f"Error starting country edit: {e}")
-        await call.answer("❌ Ошибка", show_alert=True)
+        await call.answer("⚠️ Ошибка", show_alert=True)
 
 @dp.message(AdminStates.changing_country_bank)
 async def save_country_bank(message: types.Message, state: FSMContext):
-    """Сохранить новые реквизиты для страны"""
+    """Сохранение реквизитов страны"""
     data = await state.get_data()
     country_id = data.get('country_id')
     country_name = data.get('country_name')
     
-    # Проверяем длину реквизитов
     if len(message.text.strip()) < 10:
         await message.answer(
-            "❌ <b>Реквизиты слишком короткие!</b>\n\n"
-            "Минимальная длина: 10 символов\n"
-            "Попробуйте еще раз с полными данными.",
+            "⚠️ <b>Слишком короткие реквизиты</b>\n\n"
+            "<i>Минимум 10 символов</i>",
             parse_mode="HTML"
         )
         return
     
     try:
-        logging.info(f"Updating bank details for country {country_name} (ID: {country_id})")
-        
         result = supabase.table("country_bank_details").update({
             "bank_details": message.text.strip()
         }).eq("id", country_id).execute()
         
-        logging.info(f"Update result: {result}")
-        
         await state.clear()
         
         if result.data and len(result.data) > 0:
-            # Авто-возврат в список стран
             text = (
-                f"✅ <b>Реквизиты успешно сохранены!</b>\n\n"
-                f"🏦 Страна: <b>{country_name}</b>\n"
-                f"💳 Новые реквизиты:\n<code>{message.text.strip()}</code>\n\n"
-                "🏦 <b>РЕКВИЗИТЫ ПО СТРАНАМ</b>\n\nВыберите страну для редактирования:"
+                f"✅ <b>Реквизиты сохранены</b>\n\n"
+                f"<blockquote>🏦 {country_name}\n"
+                f"<code>{message.text.strip()}</code></blockquote>\n\n"
+                "🏦 <b>РЕКВИЗИТЫ ПО СТРАНАМ</b>\n"
+                "━━━━━━━━━━━━━━━━━━━━\n\n"
+                "<i>Выберите страну для редактирования:</i>"
             )
             await message.answer(text, parse_mode="HTML", reply_markup=kb_countries())
         else:
             await message.answer(
-                f"❌ <b>Ошибка сохранения!</b>\n\n"
-                f"Реквизиты для {country_name} не были обновлены.\n"
-                f"Проверьте подключение к базе данных.",
+                "⚠️ <b>Ошибка сохранения</b>\n\n"
+                "<i>Проверьте подключение к базе данных</i>",
                 parse_mode="HTML"
             )
             
@@ -1332,53 +1567,20 @@ async def save_country_bank(message: types.Message, state: FSMContext):
         logging.error(f"Error saving country bank details: {e}")
         await state.clear()
         await message.answer(
-            f"❌ <b>Критическая ошибка!</b>\n\n"
-            f"Не удалось сохранить реквизиты для {country_name}\n"
-            f"Ошибка: <code>{str(e)}</code>\n\n"
-            f"Обратитесь к разработчику.",
+            f"⚠️ <b>Критическая ошибка</b>\n\n"
+            f"<code>{str(e)}</code>",
             parse_mode="HTML"
         )
 
-def db_update_settings(field, value):
-    try:
-        current = db_get_settings()
-        if current.get('id'):
-            logging.info(f"Updating settings: {field} = {value}")
-            result = supabase.table("settings").update({field: value}).eq("id", current['id']).execute()
-            logging.info(f"Settings update result: {result}")
-            return True
-        else:
-            logging.error("No settings ID found, cannot update")
-            return False
-    except Exception as e:
-        logging.error(f"Error updating settings: {e}")
-        return False
-
 @dp.callback_query(F.data == "back_admin")
-async def back_admin(call: types.CallbackQuery):
-    """Вернуться в главное админ меню"""
+async def back_admin(call: types.CallbackQuery, state: FSMContext):
+    """Возврат в админ панель"""
+    await state.clear()
     settings = db_get_settings()
     countries = db_get_country_bank_details()
     
-    text = (
-        "👑 <b>ADMIN PANEL</b>\n\n"
-        f"📞 Support: @{settings.get('support_username')}\n"
-        f"🏦 Стран с реквизитами: {len(countries)}\n"
-        f"💰 Минимальный депозит: ${settings.get('min_deposit')}"
-    )
+    text = get_admin_panel_text(settings, len(countries))
     await call.message.edit_text(text, parse_mode="HTML", reply_markup=kb_admin())
-
-@dp.callback_query(F.data == "ignore")
-async def ignore(call: types.CallbackQuery):
-    await call.answer()
-
-# Универсальный обработчик отмены FSM
-@dp.callback_query(F.data == "cancel_action")
-async def cancel_action(call: types.CallbackQuery, state: FSMContext):
-    """Отмена текущего действия и очистка FSM"""
-    await state.clear()
-    await call.answer("❌ Действие отменено")
-    await call.message.delete()
 
 # ==========================================
 # 🎫 СИСТЕМА ЧЕКОВ
@@ -1390,45 +1592,146 @@ async def checks_menu(call: types.CallbackQuery):
     user = db_get_user(user_id)
     
     if not user:
-        await call.answer("Пользователь не найден", show_alert=True)
+        await call.answer("⚠️ Пользователь не найден", show_alert=True)
         return
     
-    # Получаем чеки пользователя
     checks = db_get_user_checks(user_id)
     active_checks = [c for c in checks if c.get('is_active')]
+    balance = user.get('balance', 0)
     
-    text = (
-        "🎫 <b>СИСТЕМА ЧЕКОВ</b>\n\n"
-        f"💰 Ваш баланс: <b>${user.get('balance', 0):.2f}</b>\n"
-        f"📋 Активных чеков: <b>{len(active_checks)}</b>\n"
-        f"📊 Всего создано: <b>{len(checks)}</b>\n\n"
-        "Чеки позволяют передавать средства другим пользователям через ссылку.\n"
-        "При создании чека средства списываются с вашего баланса."
-    )
+    text = get_checks_menu_text(balance, len(active_checks), len(checks))
     
     builder = InlineKeyboardBuilder()
     builder.button(text="➕ Создать чек", callback_data="create_check")
+    builder.button(text="🎟 Ввести код", callback_data="enter_check_code")
     builder.button(text="📋 Мои чеки", callback_data="my_checks")
-    builder.button(text="🔙 Назад", callback_data="back_to_start")
-    builder.adjust(1)
+    builder.button(text="◀️ Назад", callback_data="back_to_start")
+    builder.adjust(2, 1, 1)
     
-    # Редактируем caption фото
-    await call.message.edit_caption(caption=text, parse_mode="HTML", reply_markup=builder.as_markup())
+    # Пробуем редактировать caption (если это фото) или text
+    try:
+        await call.message.edit_caption(caption=text, parse_mode="HTML", reply_markup=builder.as_markup())
+    except Exception:
+        try:
+            await call.message.edit_text(text, parse_mode="HTML", reply_markup=builder.as_markup())
+        except Exception as e:
+            logging.error(f"Error editing message in checks_menu: {e}")
+            await call.message.answer(text, parse_mode="HTML", reply_markup=builder.as_markup())
+
+@dp.callback_query(F.data == "enter_check_code")
+async def enter_check_code_start(call: types.CallbackQuery, state: FSMContext):
+    """Начало ввода кода чека"""
+    await state.set_state(WorkerStates.entering_check_code)
+    
+    text = (
+        "🎟 <b>АКТИВАЦИЯ ЧЕКА</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
+        "<blockquote>Введите код чека, который вам прислали.\n"
+        "Код выглядит примерно так: <code>ABC123XYZ</code></blockquote>\n\n"
+        "Введите код чека:"
+    )
+    
+    builder = InlineKeyboardBuilder()
+    builder.button(text="❌ Отмена", callback_data="checks_menu")
+    
+    try:
+        await call.message.edit_caption(caption=text, parse_mode="HTML", reply_markup=builder.as_markup())
+    except:
+        try:
+            await call.message.edit_text(text, parse_mode="HTML", reply_markup=builder.as_markup())
+        except:
+            await call.message.answer(text, parse_mode="HTML", reply_markup=builder.as_markup())
+
+@dp.message(WorkerStates.entering_check_code)
+async def process_check_code(message: types.Message, state: FSMContext):
+    """Обработка введенного кода чека"""
+    check_code = message.text.strip().upper()
+    user_id = message.from_user.id
+    
+    await state.clear()
+    
+    # Проверяем формат кода
+    if len(check_code) < 3 or len(check_code) > 50:
+        await message.answer(
+            "⚠️ <b>Неверный формат кода</b>\n\n"
+            "<i>Код должен быть от 3 до 50 символов</i>",
+            parse_mode="HTML"
+        )
+        return
+    
+    # Пробуем активировать чек
+    result = db_activate_check(check_code, user_id)
+    
+    if result:
+        success = result.get('success')
+        msg = result.get('message', '')
+        amount = result.get('amount', 0)
+        
+        if success:
+            text = (
+                "✅ <b>ЧЕК УСПЕШНО АКТИВИРОВАН</b>\n"
+                "━━━━━━━━━━━━━━━━━━━━\n\n"
+                f"<blockquote>💰 Зачислено: <b>${amount:.2f}</b>\n"
+                f"🎟 Код: <code>{check_code}</code></blockquote>\n\n"
+                "<i>Средства уже на вашем балансе!</i>"
+            )
+            
+            builder = InlineKeyboardBuilder()
+            builder.button(text="🎫 К чекам", callback_data="checks_menu")
+            builder.button(text="🏠 В меню", callback_data="back_to_start")
+            builder.adjust(2)
+            
+            await message.answer(text, parse_mode="HTML", reply_markup=builder.as_markup())
+        else:
+            # Ошибка активации
+            error_text = (
+                "⚠️ <b>НЕ УДАЛОСЬ АКТИВИРОВАТЬ ЧЕК</b>\n"
+                "━━━━━━━━━━━━━━━━━━━━\n\n"
+                f"<blockquote>{msg}</blockquote>\n\n"
+                "<i>Проверьте код и попробуйте снова</i>"
+            )
+            
+            builder = InlineKeyboardBuilder()
+            builder.button(text="🔄 Попробовать снова", callback_data="enter_check_code")
+            builder.button(text="◀️ Назад", callback_data="checks_menu")
+            builder.adjust(1)
+            
+            await message.answer(error_text, parse_mode="HTML", reply_markup=builder.as_markup())
+    else:
+        # Чек не найден или ошибка БД
+        error_text = (
+            "⚠️ <b>ЧЕК НЕ НАЙДЕН</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"<blockquote>Код: <code>{check_code}</code></blockquote>\n\n"
+            "<i>Проверьте правильность кода и попробуйте снова</i>"
+        )
+        
+        builder = InlineKeyboardBuilder()
+        builder.button(text="🔄 Попробовать снова", callback_data="enter_check_code")
+        builder.button(text="◀️ Назад", callback_data="checks_menu")
+        builder.adjust(1)
+        
+        await message.answer(error_text, parse_mode="HTML", reply_markup=builder.as_markup())
 
 @dp.callback_query(F.data == "back_to_start")
 async def back_to_start(call: types.CallbackQuery):
     """Возврат в главное меню"""
     user_id = call.from_user.id
     settings = db_get_settings()
-    welcome = (
-        "🚀 <b>Добро пожаловать в TonTrader!</b>\n\n"
-        "Современная трейдинговая платформа с удобной интеграцией в Telegram.\n"
-        "Торгуй быстро, безопасно и без лишних шагов.\n\n"
-        "👇 Нажми кнопку ниже, чтобы открыть биржу и начать"
-    )
+    welcome = get_welcome_text()
     
-    # Редактируем caption фото
-    await call.message.edit_caption(caption=welcome, parse_mode="HTML", reply_markup=kb_start(settings.get('support_username', 'support'), user_id))
+    try:
+        await call.message.edit_caption(
+            caption=welcome, 
+            parse_mode="HTML", 
+            reply_markup=kb_start(settings.get('support_username', 'support'), user_id)
+        )
+    except:
+        await call.message.edit_text(
+            welcome, 
+            parse_mode="HTML", 
+            reply_markup=kb_start(settings.get('support_username', 'support'), user_id)
+        )
 
 @dp.callback_query(F.data == "create_check")
 async def create_check_start(call: types.CallbackQuery, state: FSMContext):
@@ -1436,37 +1739,50 @@ async def create_check_start(call: types.CallbackQuery, state: FSMContext):
     user = db_get_user(call.from_user.id)
     
     if not user:
-        await call.answer("Пользователь не найден", show_alert=True)
+        await call.answer("⚠️ Пользователь не найден", show_alert=True)
         return
     
     balance = user.get('balance', 0)
     
     if balance <= 0:
-        await call.answer("Недостаточно средств для создания чека", show_alert=True)
+        await call.answer("⚠️ Недостаточно средств", show_alert=True)
         return
     
-    # Сохраняем message_id для последующего редактирования
     await state.update_data(photo_message_id=call.message.message_id, chat_id=call.message.chat.id)
     await state.set_state(WorkerStates.creating_check_amount)
     
     text = (
-        f"🎫 <b>СОЗДАНИЕ ЧЕКА</b>\n\n"
-        f"💰 Ваш баланс: <b>${balance:.2f}</b>\n\n"
-        f"Введите сумму чека в USD (например: 10 или 50.5):\n\n"
-        f"💡 При создании чека эта сумма будет списана с вашего баланса."
+        "🎫 <b>СОЗДАНИЕ ЧЕКА</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"<blockquote>Шаг 1 из 2\n"
+        f"Ваш баланс: <b>${balance:.2f}</b></blockquote>\n\n"
+        "Введите сумму чека в USD:\n"
+        "<i>При создании сумма будет списана с баланса</i>"
     )
     
-    # Редактируем caption фото
-    await call.message.edit_caption(caption=text, parse_mode="HTML")
+    builder = InlineKeyboardBuilder()
+    builder.button(text="❌ Отмена", callback_data="checks_menu")
+    
+    try:
+        await call.message.edit_caption(caption=text, parse_mode="HTML", reply_markup=builder.as_markup())
+    except:
+        try:
+            await call.message.edit_text(text, parse_mode="HTML", reply_markup=builder.as_markup())
+        except:
+            await call.message.answer(text, parse_mode="HTML", reply_markup=builder.as_markup())
 
 @dp.message(WorkerStates.creating_check_amount)
 async def create_check_amount(message: types.Message, state: FSMContext):
     """Ввод суммы чека"""
     try:
-        amount = float(message.text.strip())
+        amount = float(message.text.replace(',', '.').strip())
         
         if amount <= 0:
-            await message.answer("❌ Сумма должна быть больше 0!")
+            await message.answer(
+                "⚠️ <b>Недопустимая сумма</b>\n\n"
+                "<i>Сумма должна быть больше 0</i>",
+                parse_mode="HTML"
+            )
             return
         
         user = db_get_user(message.from_user.id)
@@ -1474,9 +1790,9 @@ async def create_check_amount(message: types.Message, state: FSMContext):
         
         if amount > balance:
             await message.answer(
-                f"❌ <b>Недостаточно средств!</b>\n\n"
-                f"💰 Ваш баланс: ${balance:.2f}\n"
-                f"💸 Требуется: ${amount:.2f}",
+                "⚠️ <b>Недостаточно средств</b>\n\n"
+                f"<blockquote>Баланс: ${balance:.2f}\n"
+                f"Требуется: ${amount:.2f}</blockquote>",
                 parse_mode="HTML"
             )
             return
@@ -1485,14 +1801,20 @@ async def create_check_amount(message: types.Message, state: FSMContext):
         await state.set_state(WorkerStates.creating_check_activations)
         
         await message.answer(
-            f"💰 Сумма чека: <b>${amount:.2f}</b>\n\n"
-            f"🔢 Введите количество активаций (1-100):\n\n"
-            f"💡 Если укажете 5, то чек смогут активировать 5 человек.\n"
-            f"С вашего баланса спишется: ${amount * 1:.2f} × количество активаций",
+            "🎫 <b>СОЗДАНИЕ ЧЕКА</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"<blockquote>Шаг 2 из 2\n"
+            f"Сумма: <b>${amount:.2f}</b></blockquote>\n\n"
+            "Введите количество активаций (1-100):\n"
+            f"<i>С баланса спишется: ${amount:.2f} × кол-во</i>",
             parse_mode="HTML"
         )
     except ValueError:
-        await message.answer("❌ Введите корректную сумму (например: 10 или 50.5)!")
+        await message.answer(
+            "⚠️ <b>Некорректный формат</b>\n\n"
+            "<i>Введите число, например: 10 или 50.5</i>",
+            parse_mode="HTML"
+        )
 
 @dp.message(WorkerStates.creating_check_activations)
 async def create_check_activations(message: types.Message, state: FSMContext):
@@ -1501,7 +1823,11 @@ async def create_check_activations(message: types.Message, state: FSMContext):
         activations = int(message.text.strip())
         
         if activations <= 0 or activations > 100:
-            await message.answer("❌ Количество активаций должно быть от 1 до 100!")
+            await message.answer(
+                "⚠️ <b>Недопустимое значение</b>\n\n"
+                "<i>Укажите от 1 до 100</i>",
+                parse_mode="HTML"
+            )
             return
         
         data = await state.get_data()
@@ -1513,14 +1839,13 @@ async def create_check_activations(message: types.Message, state: FSMContext):
         
         if total_amount > balance:
             await message.answer(
-                f"❌ <b>Недостаточно средств!</b>\n\n"
-                f"💰 Ваш баланс: ${balance:.2f}\n"
-                f"💸 Требуется: ${total_amount:.2f} (${amount:.2f} × {activations})",
+                "⚠️ <b>Недостаточно средств</b>\n\n"
+                f"<blockquote>Баланс: ${balance:.2f}\n"
+                f"Требуется: ${total_amount:.2f}</blockquote>",
                 parse_mode="HTML"
             )
             return
         
-        # Создаем чек
         check = db_create_check(
             message.from_user.id,
             amount,
@@ -1534,51 +1859,62 @@ async def create_check_activations(message: types.Message, state: FSMContext):
             check_link = f"https://t.me/{bot_info.username}?start=check_{check_code}"
             
             text = (
-                f"✅ <b>ЧЕК СОЗДАН!</b>\n\n"
-                f"🎫 Код: <code>{check_code}</code>\n"
+                "✅ <b>ЧЕК СОЗДАН</b>\n"
+                "━━━━━━━━━━━━━━━━━━━━\n\n"
+                f"<blockquote>🎫 Код: <code>{check_code}</code>\n"
                 f"💰 Сумма: <b>${amount:.2f}</b>\n"
                 f"🔢 Активаций: <b>0/{activations}</b>\n"
-                f"💸 Списано с баланса: <b>${total_amount:.2f}</b>\n\n"
-                f"🔗 Ссылка на чек:\n<code>{check_link}</code>\n\n"
-                f"Поделитесь этой ссылкой с теми, кому хотите передать средства!"
+                f"💸 Списано: <b>${total_amount:.2f}</b></blockquote>\n\n"
+                f"🔗 <b>Ссылка:</b>\n<code>{check_link}</code>\n\n"
+                "<i>Поделитесь ссылкой для передачи средств</i>"
             )
             
             builder = InlineKeyboardBuilder()
-            builder.button(text="📤 Поделиться чеком", url=f"https://t.me/share/url?url={check_link}&text=🎫 Получи ${amount:.2f} по этому чеку!")
-            builder.button(text="🏠 В главное меню", callback_data="back_to_start")
+            builder.button(text="📤 Поделиться", url=f"https://t.me/share/url?url={check_link}&text=🎫 Получи ${amount:.2f} по этому чеку!")
+            builder.button(text="🏠 В меню", callback_data="back_to_start")
             builder.adjust(1)
             
-            # Отправляем новое сообщение вместо редактирования
             await message.answer(text, parse_mode="HTML", reply_markup=builder.as_markup())
         else:
-            await message.answer("❌ Ошибка создания чека. Попробуйте еще раз.")
+            await message.answer(
+                "⚠️ <b>Ошибка создания</b>\n\n"
+                "<i>Попробуйте еще раз</i>",
+                parse_mode="HTML"
+            )
         
         await state.clear()
     except ValueError:
-        await message.answer("❌ Введите корректное число!")
+        await message.answer(
+            "⚠️ <b>Некорректный формат</b>\n\n"
+            "<i>Введите целое число</i>",
+            parse_mode="HTML"
+        )
 
 @dp.callback_query(F.data == "my_checks")
 async def show_my_checks(call: types.CallbackQuery):
-    """Показать список чеков пользователя"""
+    """Список чеков пользователя"""
     user_id = call.from_user.id
     checks = db_get_user_checks(user_id)
     
     if not checks:
         builder = InlineKeyboardBuilder()
-        builder.button(text="➕ Создать первый чек", callback_data="create_check")
-        builder.button(text="🔙 Назад", callback_data="checks_menu")
+        builder.button(text="➕ Создать первый", callback_data="create_check")
+        builder.button(text="◀️ Назад", callback_data="checks_menu")
         builder.adjust(1)
         
         text = (
-            "📋 <b>МОИ ЧЕКИ</b>\n\n"
-            "У вас пока нет созданных чеков."
+            "📋 <b>МОИ ЧЕКИ</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━\n\n"
+            "<i>У вас пока нет чеков</i>"
         )
         
-        # Редактируем caption фото
-        await call.message.edit_caption(caption=text, parse_mode="HTML", reply_markup=builder.as_markup())
+        try:
+            await call.message.edit_caption(caption=text, parse_mode="HTML", reply_markup=builder.as_markup())
+        except:
+            await call.message.edit_text(text, parse_mode="HTML", reply_markup=builder.as_markup())
         return
     
-    text = "📋 <b>МОИ ЧЕКИ</b>\n\n"
+    text = "📋 <b>МОИ ЧЕКИ</b>\n━━━━━━━━━━━━━━━━━━━━\n\n"
     
     for check in checks[:10]:
         status = "🟢" if check.get('is_active') else "🔴"
@@ -1587,158 +1923,44 @@ async def show_my_checks(call: types.CallbackQuery):
         
         text += (
             f"{status} <code>{check['check_code']}</code>\n"
-            f"💰 ${check['amount']:.2f} | "
-            f"📊 {current}/{max_act}\n\n"
+            f"   💰 ${check['amount']:.2f} • 📊 {current}/{max_act}\n\n"
         )
     
     if len(checks) > 10:
-        text += f"... и еще {len(checks) - 10} чеков\n\n"
+        text += f"<i>... и еще {len(checks) - 10}</i>\n\n"
     
     builder = InlineKeyboardBuilder()
     builder.button(text="➕ Создать новый", callback_data="create_check")
-    builder.button(text="🔙 Назад", callback_data="checks_menu")
+    builder.button(text="◀️ Назад", callback_data="checks_menu")
     builder.adjust(1)
     
-    # Редактируем caption фото
-    await call.message.edit_caption(caption=text, parse_mode="HTML", reply_markup=builder.as_markup())
-
-# Обработка deeplink для активации чека через /start check_CODE
-@dp.message(CommandStart(deep_link=True))
-async def cmd_start_deeplink(message: types.Message, command: CommandObject):
-    """Обработка deeplink для чеков и рефералов"""
-    user_id = message.from_user.id
-    username = message.from_user.username
-    full_name = message.from_user.full_name
-    
-    # Получаем фото профиля
-    photo_url = await get_user_photo_url(user_id)
-    
-    args = command.args
-    
-    # Проверяем, это чек или реферал
-    if args and args.startswith('check_'):
-        check_code = args.replace('check_', '')
-        
-        # Регистрируем пользователя если нужно
-        db_upsert_user(user_id, username, full_name, None, photo_url)
-        
-        # Активируем чек
-        result = db_activate_check(check_code, user_id)
-        
-        if result:
-            success = result.get('success')
-            msg = result.get('message')
-            amount = result.get('amount', 0)
-            
-            if success:
-                await message.answer(
-                    f"✅ <b>ЧЕК АКТИВИРОВАН!</b>\n\n"
-                    f"💰 Вы получили: <b>${amount:.2f}</b>\n"
-                    f"🎫 Код чека: <code>{check_code}</code>\n\n"
-                    f"Средства зачислены на ваш баланс!\n"
-                    f"Откройте приложение, чтобы начать торговать.",
-                    parse_mode="HTML"
-                )
-            else:
-                await message.answer(
-                    f"❌ <b>Ошибка активации</b>\n\n"
-                    f"{msg}",
-                    parse_mode="HTML"
-                )
-        
-        settings = db_get_settings()
-        await message.answer(
-            "🚀 <b>Добро пожаловать в TonTrader!</b>\n\n"
-            "Откройте приложение, чтобы начать торговать.",
-            parse_mode="HTML",
-            reply_markup=kb_start(settings.get('support_username', 'support'), user_id)
-        )
-        return
-    
-    # Обычная логика /start с рефералом
-    referrer_id = None
-    if args and args.isdigit():
-        possible_ref = int(args)
-        if possible_ref != user_id and db_get_user(possible_ref):
-            referrer_id = possible_ref
-
-    is_new = db_upsert_user(user_id, username, full_name, referrer_id, photo_url)
-
-    if is_new and referrer_id:
-        try:
-            notify_text = (
-                "🦣 <b>НОВЫЙ МАМОНТ!</b>\n"
-                f"👤 @{username or 'Нет ника'} ({user_id})\n"
-                f"📱 {full_name}"
-            )
-            await bot.send_message(referrer_id, notify_text, parse_mode="HTML")
-        except Exception as e:
-            logging.error(f"Notify error: {e}")
-    
-    settings = db_get_settings()
-    welcome = (
-        "🚀 <b>Добро пожаловать в TonTrader!</b>\n\n"
-        "Современная трейдинговая платформа с удобной интеграцией в Telegram.\n"
-        "Торгуй быстро, безопасно и без лишних шагов.\n\n"
-        "👇 Нажми кнопку ниже, чтобы открыть биржу и начать"
-    )
-    
     try:
-        from aiogram.types import FSInputFile
-        import os
-        photo_path = os.path.join(os.path.dirname(__file__), "welcome.jpg")
-        
-        if os.path.exists(photo_path) and os.path.isfile(photo_path):
-            photo = FSInputFile(photo_path)
-            await message.answer_photo(photo, caption=welcome, parse_mode="HTML", reply_markup=kb_start(settings.get('support_username', 'support'), user_id))
-        else:
-            logging.warning(f"Photo file not found: {photo_path}")
-            await message.answer(welcome, parse_mode="HTML", reply_markup=kb_start(settings.get('support_username', 'support'), user_id))
-        
-    except Exception as e:
-        logging.error(f"Error sending photo: {e}")
-        await message.answer(welcome, parse_mode="HTML", reply_markup=kb_start(settings.get('support_username', 'support'), user_id))
+        await call.message.edit_caption(caption=text, parse_mode="HTML", reply_markup=builder.as_markup())
+    except:
+        await call.message.edit_text(text, parse_mode="HTML", reply_markup=builder.as_markup())
 
-# Обработка обычного /start без параметров
-@dp.message(CommandStart())
-async def cmd_start_simple(message: types.Message):
-    """Обработка обычного /start без параметров"""
-    user_id = message.from_user.id
-    username = message.from_user.username
-    full_name = message.from_user.full_name
-    
-    # Получаем фото профиля
-    photo_url = await get_user_photo_url(user_id)
-    
-    # Регистрируем пользователя без реферера
-    db_upsert_user(user_id, username, full_name, None, photo_url)
-    
-    settings = db_get_settings()
-    welcome = (
-        "🚀 <b>Добро пожаловать в TonTrader!</b>\n\n"
-        "Современная трейдинговая платформа с удобной интеграцией в Telegram.\n"
-        "Торгуй быстро, безопасно и без лишних шагов.\n\n"
-        "👇 Нажми кнопку ниже, чтобы открыть биржу и начать"
-    )
-    
+# ==========================================
+# 🔧 УТИЛИТЫ И ОБРАБОТЧИКИ
+# ==========================================
+@dp.callback_query(F.data == "ignore")
+async def ignore(call: types.CallbackQuery):
+    """Игнорирование нажатия"""
+    await call.answer()
+
+@dp.callback_query(F.data == "cancel_action")
+async def cancel_action(call: types.CallbackQuery, state: FSMContext):
+    """Универсальная отмена действия"""
+    await state.clear()
+    await call.answer("❌ Действие отменено")
     try:
-        from aiogram.types import FSInputFile
-        import os
-        photo_path = os.path.join(os.path.dirname(__file__), "welcome.jpg")
-        
-        if os.path.exists(photo_path) and os.path.isfile(photo_path):
-            photo = FSInputFile(photo_path)
-            await message.answer_photo(photo, caption=welcome, parse_mode="HTML", reply_markup=kb_start(settings.get('support_username', 'support'), user_id))
-        else:
-            logging.warning(f"Photo file not found: {photo_path}")
-            await message.answer(welcome, parse_mode="HTML", reply_markup=kb_start(settings.get('support_username', 'support'), user_id))
-        
-    except Exception as e:
-        logging.error(f"Error sending photo: {e}")
-        await message.answer(welcome, parse_mode="HTML", reply_markup=kb_start(settings.get('support_username', 'support'), user_id))
+        await call.message.delete()
+    except:
+        pass
 
+# ==========================================
+# 🚀 ЗАПУСК БОТА
+# ==========================================
 async def main():
-    # Запускаем бота
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
 
