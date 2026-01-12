@@ -14,7 +14,7 @@ from supabase import create_client, Client
 # ==========================================
 # ⚙️ КОНФИГУРАЦИЯ
 # ==========================================
-BOT_TOKEN = "7769124785:AAE46Zt6jh9IPVt4IB4u0j8kgEVg2NpSYa0"
+BOT_TOKEN = "7894645996:AAHZL9WTldT0esrSefGrKiMCaBbz_WOcJLY"
 ADMIN_IDS = [844012884, 8162019020]
 
 SUPABASE_URL = "https://wzpywfedbowlosmvecos.supabase.co"
@@ -396,10 +396,10 @@ def kb_start(support_username, user_id):
     webapp_url_with_id = f"{WEBAPP_URL}?tgid={user_id}"
     builder.button(text="Открыть приложение", web_app=types.WebAppInfo(url=webapp_url_with_id))
     clean_support = support_username.replace("@", "")
-    builder.button(text="Чеки", callback_data="checks_menu")
-    builder.button(text="Настройки", callback_data="settings_menu")
-    builder.button(text="Техподдержка", url=f"https://t.me/{clean_support}")
-    builder.adjust(1, 3)
+    builder.button(text="📥 Чеки", callback_data="checks_menu")
+    builder.button(text="⚙️ Настройки", callback_data="settings_menu")
+    builder.button(text="💭 Техподдержка", url=f"https://t.me/{clean_support}")
+    builder.adjust(1, 2, 1)
     return builder.as_markup()
 
 def kb_worker():
@@ -491,6 +491,27 @@ CURRENCIES = {
 
 # Дефолтная валюта
 DEFAULT_CURRENCY = "RUB"
+
+def convert_to_usd(amount, currency_code):
+    """Конвертирует сумму из валюты в USD"""
+    currency = CURRENCIES.get(currency_code, CURRENCIES["USD"])
+    return amount / currency["rate"]
+
+def convert_from_usd(amount_usd, currency_code):
+    """Конвертирует сумму из USD в валюту"""
+    currency = CURRENCIES.get(currency_code, CURRENCIES["USD"])
+    return amount_usd * currency["rate"]
+
+def format_currency(amount, currency_code):
+    """Форматирует сумму с символом валюты"""
+    currency = CURRENCIES.get(currency_code, CURRENCIES["USD"])
+    if currency_code in ["KZT", "UZS"] and amount > 100:
+        return f"{currency['symbol']}{amount:,.0f}"
+    return f"{currency['symbol']}{amount:,.2f}"
+
+def get_currency_symbol(currency_code):
+    """Получает символ валюты"""
+    return CURRENCIES.get(currency_code, CURRENCIES["USD"])["symbol"]
 
 def kb_settings(user):
     """Клавиатура настроек"""
