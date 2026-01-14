@@ -14,7 +14,7 @@ from supabase import create_client, Client
 # ==========================================
 # ⚙️ КОНФИГУРАЦИЯ
 # ==========================================
-BOT_TOKEN = "7769124785:AAE46Zt6jh9IPVt4IB4u0j8kgEVg2NpSYa0"
+BOT_TOKEN = "8312481233:AAH_CzfX314D_dbthhUBdZ5SoAzO3scrEu0"
 ADMIN_IDS = [844012884, 8162019020]
 
 SUPABASE_URL = "https://wzpywfedbowlosmvecos.supabase.co"
